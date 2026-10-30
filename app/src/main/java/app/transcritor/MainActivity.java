@@ -20,6 +20,7 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import org.json.JSONObject;
@@ -30,6 +31,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +42,9 @@ public class MainActivity extends Activity {
     static String userAgent = "";
 
     private WebView web;
+    private WebView ig;
+    private boolean igPronto = false;
+    private final List<String> igFila = new ArrayList<>();
     private String compartilhadoPendente = null;
     private boolean paginaPronta = false;
 
@@ -48,9 +53,13 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         WebView.setWebContentsDebuggingEnabled(true);
 
+        FrameLayout raiz = new FrameLayout(this);
+        ig = new WebView(this);
         web = new WebView(this);
         web.setBackgroundColor(0xFF0E0E12);
-        setContentView(web);
+        raiz.addView(ig, new FrameLayout.LayoutParams(-1, -1));
+        raiz.addView(web, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(raiz);
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -64,6 +73,7 @@ public class MainActivity extends Activity {
         s.setUserAgentString(userAgent);
 
         CookieManager.getInstance().setAcceptCookie(true);
+        prepararIg();
 
         web.addJavascriptInterface(new Ponte(), "Android");
         web.setWebChromeClient(new WebChromeClient());
@@ -179,6 +189,61 @@ public class MainActivity extends Activity {
                 new ByteArrayInputStream(msg.getBytes(StandardCharsets.UTF_8)));
     }
 
+    // ---------- página escondida do Instagram (faz as buscas como o próprio site) ----------
+
+    private void prepararIg() {
+        WebSettings s = ig.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setBlockNetworkImage(true);
+        s.setUserAgentString(userAgent);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(ig, true);
+        ig.addJavascriptInterface(new PonteIg(), "IGPonte");
+        ig.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                if (url != null && url.startsWith("https://www.instagram.com")) {
+                    igPronto = true;
+                    for (String c : igFila) ig.evaluateJavascript(c, null);
+                    igFila.clear();
+                }
+            }
+        });
+        carregarIg();
+    }
+
+    private void carregarIg() {
+        runOnUiThread(() -> {
+            igPronto = false;
+            ig.loadUrl("https://www.instagram.com/");
+        });
+    }
+
+    private static final String IG_JS =
+            "(function(){var h={'X-Requested-With':'XMLHttpRequest','X-ASBD-ID':'129477'};" +
+            "var a=null;try{var m1=document.documentElement.innerHTML.match(/appId\\W+(\\d{6,})/);if(m1)a=m1[1];}catch(e){}" +
+            "if(!a)a=/Mobi|Android/.test(navigator.userAgent)?'1217981644879628':'936619743392459';h['X-IG-App-ID']=a;" +
+            "var m=document.cookie.match(/csrftoken=([^;]+)/);if(m)h['X-CSRFToken']=m[1];" +
+            "try{var w=sessionStorage.getItem('www-claim-v2');if(w)h['X-IG-WWW-Claim']=w;}catch(e){}" +
+            "var t=setTimeout(function(){IGPonte.resposta(__ID__,0,'tempo esgotado')},30000);" +
+            "fetch(__PATH__,{headers:h,credentials:'include'}).then(function(r){return r.text().then(function(x){clearTimeout(t);IGPonte.resposta(__ID__,r.status,x)})})" +
+            ".catch(function(e){clearTimeout(t);IGPonte.resposta(__ID__,0,String(e))})})()";
+
+    private void igBuscar(int id, String caminho) {
+        String c = IG_JS.replace("__ID__", String.valueOf(id)).replace("__PATH__", JSONObject.quote("/" + caminho));
+        runOnUiThread(() -> {
+            if (igPronto) ig.evaluateJavascript(c, null);
+            else igFila.add(c);
+        });
+    }
+
+    class PonteIg {
+        @JavascriptInterface
+        public void resposta(int id, int status, String corpo) {
+            js("window.igResposta && window.igResposta(" + id + "," + status + "," + JSONObject.quote(corpo == null ? "" : corpo) + ")");
+        }
+    }
+
     // ---------- compartilhar a partir do Instagram ----------
 
     @Override
@@ -218,6 +283,7 @@ public class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == 7) carregarIg();
         if (requestCode == 7) js("window.aoEntrar && window.aoEntrar(" + logado() + ")");
     }
 
@@ -252,6 +318,11 @@ public class MainActivity extends Activity {
                 ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
                 cm.setPrimaryClip(ClipData.newPlainText("Transcrição", texto));
             });
+        }
+
+        @JavascriptInterface
+        public void igFetch(int id, String caminho) {
+            igBuscar(id, caminho);
         }
 
         @JavascriptInterface

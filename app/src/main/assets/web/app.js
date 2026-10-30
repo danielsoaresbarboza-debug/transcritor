@@ -44,7 +44,7 @@ $$('[data-voltar]').forEach((b) => b.addEventListener('click', () => window.volt
 let tAviso;
 function aviso(msg) {
   const el = $('#aviso'); el.textContent = msg; el.classList.add('on');
-  clearTimeout(tAviso); tAviso = setTimeout(() => el.classList.remove('on'), 2400);
+  clearTimeout(tAviso); tAviso = setTimeout(() => el.classList.remove('on'), msg.length > 60 ? 5000 : 2400);
 }
 function abrirFolha(id) { fecharFolhas(); $('#veu').classList.add('on'); $('#' + id).classList.add('on'); }
 function fecharFolhas() { $('#veu').classList.remove('on'); $$('.folha').forEach((f) => f.classList.remove('on')); }
@@ -138,19 +138,41 @@ class ErroPerfil extends Error {}
 class ErroPrivado extends Error {}
 class ErroLimite extends Error {}
 
+// as buscas passam por uma página escondida do Instagram (igual ao site);
+// se ela não responder, usa o caminho direto pelo app
+const igPendentes = new Map();
+let igSeq = 0;
+window.igResposta = (id, status, texto) => {
+  const p = igPendentes.get(id);
+  if (p) { igPendentes.delete(id); p({ status, texto }); }
+};
+function viaPagina(caminho) {
+  return new Promise((ok) => {
+    const id = ++igSeq;
+    igPendentes.set(id, ok);
+    A.igFetch(id, caminho);
+  });
+}
+async function viaDireto(caminho) {
+  try {
+    const r = await fetch('/ig/' + caminho, { cache: 'no-store' });
+    return { status: r.status, texto: await r.text() };
+  } catch (e) { return { status: 0, texto: String(e) }; }
+}
+let ultimoErro = '';
 async function ig(caminho) {
-  const r = await fetch('/ig/' + caminho, { cache: 'no-store' });
-  if (r.status === 404) throw new ErroPerfil();
-  if (r.status === 429) throw new ErroLimite();
-  if (r.status === 401 || r.status === 403) throw new ErroLogin();
-  const txt = await r.text();
-  let j;
-  try { j = JSON.parse(txt); } catch (e) { throw new ErroLogin(); }
+  let r = A.igFetch ? await viaPagina(caminho) : { status: 0 };
+  if (!r.status) r = await viaDireto(caminho);
+  const { status, texto } = r;
+  let j = null;
+  try { j = JSON.parse(texto); } catch (e) {}
+  ultimoErro = `HTTP ${status}${j && j.message ? ' · ' + j.message : ''}`;
+  if (status === 404) throw new ErroPerfil();
   if (j && j.require_login) throw new ErroLogin();
-  if (j && j.status === 'fail') {
-    if (/wait|aguarde|few minutes/i.test(j.message || '')) throw new ErroLimite();
-    throw new ErroLogin();
-  }
+  if (status === 429 || (j && /wait|aguarde|minut/i.test(j.message || ''))) throw new ErroLimite();
+  if (status === 401 || status === 403) throw new ErroLogin();
+  if (!j) throw status ? new ErroLogin() : new Error('sem conexão');
+  if (j.status === 'fail') throw new Error(j.message || 'falha');
   return j;
 }
 
@@ -232,8 +254,8 @@ async function buscar(nome) {
     if (e instanceof ErroLogin) { depoisDoLogin = () => buscar(nome); abrirFolha('f-login'); }
     else if (e instanceof ErroPerfil) aviso(`Não encontrei @${nome}. Confira o @.`);
     else if (e instanceof ErroPrivado) aviso(`@${nome} é privado`);
-    else if (e instanceof ErroLimite) aviso('O Instagram pediu uma pausa. Tente em alguns minutos.');
-    else aviso('Sem conexão com o Instagram. Tente de novo.');
+    else if (e instanceof ErroLimite) aviso('O Instagram pediu uma pausa. Tente em alguns minutos. (' + ultimoErro + ')');
+    else aviso('Não deu certo: ' + (e.message || ultimoErro) + ' (' + ultimoErro + ')');
   } finally {
     btn.disabled = false;
     const g = $('.girando', btn); g && g.remove();
