@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>Transcritor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<!-- ============ INÍCIO ============ -->
+<section id="v-inicio" class="tela ativa">
+  <header class="topo">
+    <div class="marca">
+      <span class="logo"><svg viewBox="0 0 24 24"><rect x="3" y="9" width="2.6" height="6" rx="1.3"/><rect x="7.2" y="5" width="2.6" height="14" rx="1.3"/><rect x="11.4" y="7.5" width="2.6" height="9" rx="1.3"/><rect x="16" y="9" width="5" height="2" rx="1"/><rect x="16" y="13" width="3.6" height="2" rx="1"/></svg></span>
+      <b>Transcritor</b>
+    </div>
+    <div class="topo-acoes">
+      <button id="chip-conta" class="chip-conta" type="button"></button>
+      <button class="icone" id="btn-ajustes" type="button" aria-label="Ajustes"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
+    </div>
+  </header>
+
+  <div class="rolagem">
+    <div class="hero">
+      <h1>Do perfil ao texto,<br><span class="grad">em poucos toques.</span></h1>
+      <p>Digite o @ e receba a transcrição dos últimos vídeos, pronta para virar carrossel.</p>
+    </div>
+
+    <form id="form-busca" class="cartao busca" autocomplete="off">
+      <label class="campo">
+        <span class="arroba">@</span>
+        <input id="in-perfil" type="text" inputmode="text" autocapitalize="none" spellcheck="false" placeholder="perfil do instagram" enterkeyhint="search">
+        <button type="button" class="colar" id="btn-colar">Colar</button>
+      </label>
+      <div class="rotulo">Quantos vídeos?</div>
+      <div class="segmentos" id="seg-qtd">
+        <button type="button" data-q="3">3</button>
+        <button type="button" data-q="6">6</button>
+        <button type="button" data-q="9">9</button>
+        <button type="button" data-q="12">12</button>
+        <button type="button" data-q="18">18</button>
+      </div>
+      <button class="primario" type="submit" id="btn-buscar">
+        <span>Buscar vídeos</span>
+        <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </form>
+
+    <div class="dica">
+      <span class="dica-ic"><svg viewBox="0 0 24 24"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7M16 6l-4-4-4 4M12 2v13"/></svg></span>
+      <div><b>Atalho:</b> no Instagram, toque em <b>Compartilhar</b> num perfil ou num reel e escolha <b>Transcritor</b>. O app abre já buscando.</div>
+    </div>
+
+    <div id="bloco-recentes" class="recentes oculto">
+      <div class="secao-titulo">Recentes</div>
+      <div id="lista-recentes"></div>
+    </div>
+    <div class="respiro"></div>
+  </div>
+</section>
+
+<!-- ============ ESCOLHA DOS VÍDEOS ============ -->
+<section id="v-videos" class="tela">
+  <header class="topo">
+    <button class="icone" data-voltar type="button" aria-label="Voltar"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+    <div class="perfil-mini" id="perfil-cab"></div>
+    <span class="icone-vazio"></span>
+  </header>
+  <div class="barra-sel">
+    <span id="txt-sel"></span>
+    <button type="button" class="link" id="btn-todos">Desmarcar todos</button>
+  </div>
+  <div class="rolagem">
+    <div id="aviso-videos"></div>
+    <div class="grade" id="grade"></div>
+    <div class="respiro"></div>
+  </div>
+  <footer class="rodape">
+    <button class="primario" id="btn-transcrever" type="button"></button>
+  </footer>
+</section>
+
+<!-- ============ RESULTADO ============ -->
+<section id="v-resultado" class="tela">
+  <header class="topo">
+    <button class="icone" data-voltar type="button" aria-label="Voltar"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+    <div class="perfil-mini" id="res-cab"></div>
+    <button class="icone" id="btn-ajustes2" type="button" aria-label="Ajustes"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
+  </header>
+  <div class="rolagem">
+    <div class="painel-progresso" id="painel">
+      <div class="pp-linha"><b id="pp-titulo">Preparando…</b><span id="pp-eta"></span></div>
+      <div class="barra"><i id="pp-barra"></i></div>
+      <div class="pp-sub" id="pp-sub"></div>
+    </div>
+    <div id="lista-res"></div>
+    <div class="respiro"></div>
+  </div>
+  <footer class="rodape duplo">
+    <button class="secundario" id="btn-copiar-tudo" type="button"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg><span>Copiar</span></button>
+    <button class="primario" id="btn-enviar" type="button"><svg viewBox="0 0 24 24"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7M16 6l-4-4-4 4M12 2v13"/></svg><span>Enviar .md</span></button>
+  </footer>
+</section>
+
+<!-- ============ FOLHAS ============ -->
+<div class="veu" id="veu"></div>
+
+<div class="folha" id="f-ajustes">
+  <div class="alca"></div>
+  <h2>Ajustes</h2>
+  <div class="rotulo">Qualidade da transcrição</div>
+  <div class="opcoes" data-grupo="qualidade">
+    <button type="button" data-v="rapida"><b>Rápida</b><small>Modelo leve · ~80 MB</small></button>
+    <button type="button" data-v="precisa"><b>Precisa</b><small>Mais fiel · ~250 MB · mais lenta</small></button>
+  </div>
+  <div class="rotulo">Idioma dos vídeos</div>
+  <div class="segmentos" data-grupo="idioma">
+    <button type="button" data-v="pt">Português</button>
+    <button type="button" data-v="auto">Automático</button>
+    <button type="button" data-v="en">Inglês</button>
+    <button type="button" data-v="es">Espanhol</button>
+  </div>
+  <label class="interruptor">
+    <span><b>Acelerar com a GPU</b><small>Experimental. Desligue se o texto sair estranho.</small></span>
+    <input type="checkbox" id="chk-gpu"><i></i>
+  </label>
+  <div class="rotulo">Conta do Instagram</div>
+  <div class="conta" id="conta-box"></div>
+  <p class="versao" id="versao"></p>
+</div>
+
+<div class="folha" id="f-login">
+  <div class="alca"></div>
+  <div class="selo"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+  <h2>O Instagram pediu login</h2>
+  <p>Para ver os vídeos, entre numa conta do Instagram dentro do app. É feito só uma vez.</p>
+  <p class="nota">Dica: use de preferência uma conta secundária.</p>
+  <button class="primario" id="btn-login" type="button"><span>Entrar no Instagram</span></button>
+  <button class="link centro" data-fechar type="button">Agora não</button>
+</div>
+
+<div class="aviso" id="aviso"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

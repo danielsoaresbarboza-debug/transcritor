@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ondas sonoras que viram linhas de texto -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:pathData="M33,46h4a2,2 0,0 1,2 2v12a2,2 0,0 1,-2 2h-4a2,2 0,0 1,-2 -2v-12a2,2 0,0 1,2 -2z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M43,38h4a2,2 0,0 1,2 2v28a2,2 0,0 1,-2 2h-4a2,2 0,0 1,-2 -2v-28a2,2 0,0 1,2 -2z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M53,43h4a2,2 0,0 1,2 2v18a2,2 0,0 1,-2 2h-4a2,2 0,0 1,-2 -2v-18a2,2 0,0 1,2 -2z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M63,46h12a2,2 0,0 1,2 2v0a2,2 0,0 1,-2 2h-12a2,2 0,0 1,-2 -2v0a2,2 0,0 1,2 -2z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M63,53h9a2,2 0,0 1,2 2v0a2,2 0,0 1,-2 2h-9a2,2 0,0 1,-2 -2v0a2,2 0,0 1,2 -2z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M63,60h12a2,2 0,0 1,2 2v0a2,2 0,0 1,-2 2h-12a2,2 0,0 1,-2 -2v0a2,2 0,0 1,2 -2z" />
+</vector>
