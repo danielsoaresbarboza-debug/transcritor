@@ -51,6 +51,7 @@ public class MainActivity extends Activity {
     private boolean igPronto = false;
     private final List<String> igFila = new ArrayList<>();
     private String gancho = "";
+    private boolean igVisivel = false;
     private String compartilhadoPendente = null;
     private boolean paginaPronta = false;
 
@@ -175,10 +176,6 @@ public class MainActivity extends Activity {
             }
         }
         int status = c.getResponseCode();
-        if (instagram) {
-            List<String> novos = c.getHeaderFields().get("Set-Cookie");
-            if (novos != null) for (String ck : novos) CookieManager.getInstance().setCookie("https://www.instagram.com", ck);
-        }
         String tipo = c.getContentType() == null ? "application/octet-stream" : c.getContentType();
         String mime = tipo.split(";")[0].trim();
         InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
@@ -228,6 +225,16 @@ public class MainActivity extends Activity {
             }
         });
         carregarIg();
+    }
+
+    private void mostrarIg(boolean sim) {
+        runOnUiThread(() -> {
+            igVisivel = sim;
+            web.setVisibility(sim ? android.view.View.GONE : android.view.View.VISIBLE);
+            ig.getSettings().setBlockNetworkImage(!sim);
+            if (sim) Toast.makeText(this, "Página do Instagram. Toque em voltar para retornar.", Toast.LENGTH_LONG).show();
+            else js("window.aoEntrar && window.aoEntrar(" + logado() + ")");
+        });
     }
 
     private void carregarIg() {
@@ -314,6 +321,10 @@ public class MainActivity extends Activity {
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
+        if (igVisivel) {
+            mostrarIg(false);
+            return;
+        }
         web.evaluateJavascript("window.voltar ? window.voltar() : false", v -> {
             if (!"true".equals(v)) finish();
         });
@@ -367,6 +378,11 @@ public class MainActivity extends Activity {
                 igPronto = false;
                 ig.loadUrl(url);
             });
+        }
+
+        @JavascriptInterface
+        public void igMostrar(boolean sim) {
+            mostrarIg(sim);
         }
 
         @JavascriptInterface

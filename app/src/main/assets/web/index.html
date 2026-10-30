@@ -137,11 +137,21 @@
 <div class="folha" id="f-login">
   <div class="alca"></div>
   <div class="selo"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
-  <h2>O Instagram pediu login</h2>
-  <p>Para ver os vídeos, entre numa conta do Instagram dentro do app. É feito só uma vez.</p>
+  <h2>Entre no Instagram</h2>
+  <p>O Instagram só mostra os vídeos de um perfil para quem está logado. Entre uma vez e o app guarda o acesso.</p>
   <p class="nota">Dica: use de preferência uma conta secundária.</p>
   <button class="primario" id="btn-login" type="button"><span>Entrar no Instagram</span></button>
   <button class="link centro" data-fechar type="button">Agora não</button>
+</div>
+
+<div class="folha" id="f-erro">
+  <div class="alca"></div>
+  <div class="selo"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/></svg></div>
+  <h2>Não consegui ler o perfil</h2>
+  <p id="erro-msg"></p>
+  <p class="nota" id="erro-det"></p>
+  <button class="primario" id="btn-ver-ig" type="button"><span>Ver o que o Instagram mostrou</span></button>
+  <button class="link centro" id="btn-tentar" type="button">Tentar de novo</button>
 </div>
 
 <div class="aviso" id="aviso"></div>

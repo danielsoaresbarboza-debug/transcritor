@@ -58,10 +58,11 @@ function atualizarConta() {
   chip.className = 'chip-conta' + (on ? ' on' : '');
   chip.innerHTML = `<i></i>${on ? 'Conectado' : 'Entrar'}`;
   $('#conta-box').innerHTML = on
-    ? `<span>Instagram conectado</span><button type="button" id="btn-sair">Sair</button>`
+    ? `<span>Instagram conectado</span><span><button type="button" id="btn-ver-ig2">Ver página</button> &nbsp; <button type="button" id="btn-sair">Sair</button></span>`
     : `<span>Sem conta conectada</span><button type="button" id="btn-entrar2">Entrar</button>`;
   const s = $('#btn-sair'); if (s) s.onclick = () => { A.sair(); atualizarConta(); aviso('Você saiu do Instagram'); };
   const e = $('#btn-entrar2'); if (e) e.onclick = () => A.entrar();
+  const v = $('#btn-ver-ig2'); if (v) v.onclick = () => { fecharFolhas(); A.igMostrar && A.igMostrar(true); };
 }
 $('#chip-conta').addEventListener('click', () => (A.logado() ? abrirFolha('f-ajustes') : A.entrar()));
 $('#btn-login').addEventListener('click', () => { fecharFolhas(); A.entrar(); });
@@ -137,6 +138,7 @@ class ErroLogin extends Error {}
 class ErroPerfil extends Error {}
 class ErroPrivado extends Error {}
 class ErroLimite extends Error {}
+class ErroCaptura extends Error {}
 
 // as buscas passam por uma página escondida do Instagram (igual ao site);
 // se ela não responder, usa o caminho direto pelo app
@@ -213,6 +215,7 @@ function erroDaPagina(e) {
   if (!e) return null;
   const p = e.path || '', t = e.texto || '';
   if (/^\/(accounts\/login|challenge|accounts\/suspended)/.test(p)) return new ErroLogin();
+  if (!A.logado()) return new ErroLogin();
   if (/conta é privada|account is private|cuenta es privada/i.test(t)) return new ErroPrivado();
   if (/não está disponível|isn't available|no está disponible|page not found/i.test(t)) return new ErroPerfil();
   if (/tente novamente mais tarde|try again later|wait a few minutes|aguarde alguns minutos/i.test(t)) return new ErroLimite();
@@ -243,8 +246,10 @@ function capturarPerfil(nome, qtd) {
       A.igRolar();
     }
     if (!meus().length) {
-      const p = cap.estado ? cap.estado.path : '?';
-      throw new Error('o perfil não carregou na página escondida (' + p + ')');
+      const e = cap.estado || {};
+      const err = new ErroCaptura('A página do perfil abriu, mas nenhum post apareceu.');
+      err.detalhe = `Página: ${e.path || '?'} · Texto: ${(e.texto || '(vazia)').replace(/\s+/g, ' ').slice(0, 160)}`;
+      throw err;
     }
     const u = cap.usuarios.get(nome) || {};
     if (u.privado && !meus().length) throw new ErroPrivado();
@@ -269,7 +274,7 @@ function capturarPost(codigo, cond) {
 async function donoDoPost(codigo) {
   if (temCaptura()) {
     const m = await capturarPost(codigo, (x) => !!x.dono);
-    if (m) return m.dono.toLowerCase();
+    return m ? m.dono.toLowerCase() : null;
   }
   try {
     const j = await ig(`p/${codigo}/?__a=1&__d=dis`);
@@ -298,13 +303,7 @@ function deItem(it) {
 
 async function buscarPerfil(nome, qtd) {
   if (temCaptura()) {
-    try {
-      return await capturarPerfil(nome, qtd);
-    } catch (e) {
-      if (e instanceof ErroLogin || e instanceof ErroPerfil || e instanceof ErroPrivado) throw e;
-      ultimoErro = e.message || String(e);
-      try { return await buscarPerfilApi(nome, qtd); } catch (e2) { throw e; }
-    }
+    return capturarPerfil(nome, qtd);
   }
   return buscarPerfilApi(nome, qtd);
 }
@@ -343,9 +342,13 @@ async function buscarPerfilApi(nome, qtd) {
 }
 
 // ---------- busca ----------
+let ultimaBusca = '';
+$('#btn-ver-ig').addEventListener('click', () => { fecharFolhas(); A.igMostrar && A.igMostrar(true); });
+$('#btn-tentar').addEventListener('click', () => { fecharFolhas(); if (ultimaBusca) buscar(ultimaBusca); });
 async function buscar(nome) {
   const btn = $('#btn-buscar');
   if (btn.disabled) return;
+  if (!A.logado()) { depoisDoLogin = () => buscar(nome); abrirFolha('f-login'); return; }
   btn.disabled = true;
   btn.insertAdjacentHTML('beforeend', '<i class="girando"></i>');
   $('#form-busca').classList.add('carregando');
@@ -362,8 +365,14 @@ async function buscar(nome) {
     if (e instanceof ErroLogin) { depoisDoLogin = () => buscar(nome); abrirFolha('f-login'); }
     else if (e instanceof ErroPerfil) aviso(`Não encontrei @${nome}. Confira o @.`);
     else if (e instanceof ErroPrivado) aviso(`@${nome} é privado`);
-    else if (e instanceof ErroLimite) aviso('O Instagram pediu uma pausa. Tente em alguns minutos. (' + (ultimoErro || 'página') + ')');
-    else aviso('Não deu certo: ' + (e.message || ultimoErro) + ' (' + ultimoErro + ')');
+    else {
+      ultimaBusca = nome;
+      $('#erro-msg').textContent = e instanceof ErroLimite
+        ? 'O Instagram pediu uma pausa para esta conta. Espere um pouco (às vezes algumas horas) e tente de novo.'
+        : (e.message || 'Algo deu errado.');
+      $('#erro-det').textContent = e.detalhe || (e instanceof ErroLimite ? 'Toque abaixo para ver se o Instagram está pedindo alguma confirmação.' : '');
+      abrirFolha('f-erro');
+    }
   } finally {
     btn.disabled = false;
     const g = $('.girando', btn); g && g.remove();
@@ -468,6 +477,7 @@ async function audioDe(v) {
   if (!url && temCaptura()) {
     const m = await capturarPost(v.codigo, (x) => !!x.video);
     if (m) url = v.video = m.video;
+    if (!url) throw new Error('Não consegui o link do vídeo');
   }
   if (!url) {
     try {
