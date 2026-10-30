@@ -41,3 +41,7 @@ android {
         noCompress += listOf("html", "js", "css")
     }
 }
+
+dependencies {
+    implementation("androidx.webkit:webkit:1.11.0")
+}

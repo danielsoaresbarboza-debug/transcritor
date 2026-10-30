@@ -176,7 +176,101 @@ async function ig(caminho) {
   return j;
 }
 
+// ---------- captura pela página escondida (o jeito principal) ----------
+const cap = { midias: new Map(), usuarios: new Map(), estado: null, ouvintes: new Set() };
+const avisarOuvintes = () => cap.ouvintes.forEach((f) => f());
+window.igDados = (t) => {
+  let d; try { d = JSON.parse(t); } catch (e) { return; }
+  for (const m of d.m || []) {
+    const a = cap.midias.get(m.codigo) || {};
+    for (const k in m) if (m[k] != null && m[k] !== '' && k !== 'ehVideo') a[k] = m[k];
+    a.ehVideo = !!(a.ehVideo || m.ehVideo);
+    cap.midias.set(m.codigo, a);
+  }
+  for (const u of d.u || []) {
+    const k = u.username.toLowerCase();
+    const atual = cap.usuarios.get(k) || {};
+    for (const c in u) if (u[c] !== '' && u[c] != null) atual[c] = u[c];
+    cap.usuarios.set(k, atual);
+  }
+  avisarOuvintes();
+};
+window.igEstadoPagina = (t) => { try { cap.estado = JSON.parse(t); } catch (e) {} avisarOuvintes(); };
+const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
+function esperar(cond, ms) {
+  return new Promise((ok) => {
+    let fim = false;
+    const t = setTimeout(() => { fim = true; cap.ouvintes.delete(f); ok(false); }, ms);
+    const f = () => { if (!fim && cond()) { fim = true; cap.ouvintes.delete(f); clearTimeout(t); ok(true); } };
+    cap.ouvintes.add(f); f();
+  });
+}
+let filaIg = Promise.resolve();
+function exclusivo(fn) { const p = filaIg.then(fn, fn); filaIg = p.catch(() => {}); return p; }
+const temCaptura = () => !!(A.igAbrir && A.igRolar);
+
+function erroDaPagina(e) {
+  if (!e) return null;
+  const p = e.path || '', t = e.texto || '';
+  if (/^\/(accounts\/login|challenge|accounts\/suspended)/.test(p)) return new ErroLogin();
+  if (/conta é privada|account is private|cuenta es privada/i.test(t)) return new ErroPrivado();
+  if (/não está disponível|isn't available|no está disponible|page not found/i.test(t)) return new ErroPerfil();
+  if (/tente novamente mais tarde|try again later|wait a few minutes|aguarde alguns minutos/i.test(t)) return new ErroLimite();
+  return null;
+}
+
+function capturarPerfil(nome, qtd) {
+  return exclusivo(async () => {
+    cap.midias.clear(); cap.estado = null;
+    A.igAbrir(`https://www.instagram.com/${nome}/`);
+    const meus = () => [...cap.midias.values()].filter((m) => !m.dono || m.dono.toLowerCase() === nome);
+    const videos = () => meus().filter((m) => m.ehVideo);
+    const inicio = Date.now();
+    let ultimo = -1, parado = 0;
+    while (Date.now() - inicio < 50000) {
+      await dormir(1500);
+      A.igPedirEstado();
+      const n = videos().length;
+      if (!meus().length && Date.now() - inicio > 4000) {
+        const err = erroDaPagina(cap.estado);
+        if (err) throw err;
+      }
+      if (n >= qtd + 3) break;
+      if (meus().length) {
+        if (n === ultimo) { if (++parado >= 6) break; } else parado = 0;
+      } else if (Date.now() - inicio > 25000) break;
+      ultimo = n;
+      A.igRolar();
+    }
+    if (!meus().length) {
+      const p = cap.estado ? cap.estado.path : '?';
+      throw new Error('o perfil não carregou na página escondida (' + p + ')');
+    }
+    const u = cap.usuarios.get(nome) || {};
+    if (u.privado && !meus().length) throw new ErroPrivado();
+    const lista = videos().sort((a, b) => (b.data || 0) - (a.data || 0));
+    return {
+      perfil: { nome, titulo: u.full_name || nome, foto: u.foto || '' },
+      videos: lista.map((m) => ({ codigo: m.codigo, thumb: m.thumb, video: m.video || null, descricao: m.descricao || '', data: m.data, duracao: m.duracao, views: m.views })),
+      limitado: false,
+    };
+  });
+}
+
+function capturarPost(codigo, cond) {
+  return exclusivo(async () => {
+    cap.estado = null;
+    A.igAbrir(`https://www.instagram.com/p/${codigo}/`);
+    const ok = await esperar(() => { const m = cap.midias.get(codigo); return !!(m && cond(m)); }, 20000);
+    return ok ? cap.midias.get(codigo) : null;
+  });
+}
+
 async function donoDoPost(codigo) {
+  if (temCaptura()) {
+    const m = await capturarPost(codigo, (x) => !!x.dono);
+    if (m) return m.dono.toLowerCase();
+  }
   try {
     const j = await ig(`p/${codigo}/?__a=1&__d=dis`);
     const it = (j.items && j.items[0]) || (j.graphql && j.graphql.shortcode_media);
@@ -203,6 +297,19 @@ function deItem(it) {
 }
 
 async function buscarPerfil(nome, qtd) {
+  if (temCaptura()) {
+    try {
+      return await capturarPerfil(nome, qtd);
+    } catch (e) {
+      if (e instanceof ErroLogin || e instanceof ErroPerfil || e instanceof ErroPrivado) throw e;
+      ultimoErro = e.message || String(e);
+      try { return await buscarPerfilApi(nome, qtd); } catch (e2) { throw e; }
+    }
+  }
+  return buscarPerfilApi(nome, qtd);
+}
+
+async function buscarPerfilApi(nome, qtd) {
   const j = await ig('api/v1/users/web_profile_info/?username=' + encodeURIComponent(nome));
   const u = j && j.data && j.data.user;
   if (!u) throw new ErroPerfil();
@@ -243,6 +350,7 @@ async function buscar(nome) {
   btn.insertAdjacentHTML('beforeend', '<i class="girando"></i>');
   $('#form-busca').classList.add('carregando');
   A.toque();
+  aviso('Abrindo o perfil… leva uns segundos');
   try {
     const r = await buscarPerfil(nome, pref.qtd);
     E.perfil = r.perfil; E.videos = r.videos;
@@ -254,7 +362,7 @@ async function buscar(nome) {
     if (e instanceof ErroLogin) { depoisDoLogin = () => buscar(nome); abrirFolha('f-login'); }
     else if (e instanceof ErroPerfil) aviso(`Não encontrei @${nome}. Confira o @.`);
     else if (e instanceof ErroPrivado) aviso(`@${nome} é privado`);
-    else if (e instanceof ErroLimite) aviso('O Instagram pediu uma pausa. Tente em alguns minutos. (' + ultimoErro + ')');
+    else if (e instanceof ErroLimite) aviso('O Instagram pediu uma pausa. Tente em alguns minutos. (' + (ultimoErro || 'página') + ')');
     else aviso('Não deu certo: ' + (e.message || ultimoErro) + ' (' + ultimoErro + ')');
   } finally {
     btn.disabled = false;
@@ -357,6 +465,10 @@ function transcreverAudio(audio) {
 
 async function audioDe(v) {
   let url = v.video;
+  if (!url && temCaptura()) {
+    const m = await capturarPost(v.codigo, (x) => !!x.video);
+    if (m) url = v.video = m.video;
+  }
   if (!url) {
     try {
       const j = await ig(`p/${v.codigo}/?__a=1&__d=dis`);

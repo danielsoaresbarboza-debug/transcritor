@@ -21,6 +21,9 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
 import android.widget.Toast;
 
 import org.json.JSONObject;
@@ -31,7 +34,9 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +50,7 @@ public class MainActivity extends Activity {
     private WebView ig;
     private boolean igPronto = false;
     private final List<String> igFila = new ArrayList<>();
+    private String gancho = "";
     private String compartilhadoPendente = null;
     private boolean paginaPronta = false;
 
@@ -199,9 +205,21 @@ public class MainActivity extends Activity {
         s.setUserAgentString(userAgent);
         CookieManager.getInstance().setAcceptThirdPartyCookies(ig, true);
         ig.addJavascriptInterface(new PonteIg(), "IGPonte");
+        gancho = lerAsset("web/ig-hook.js");
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
+                WebViewCompat.addDocumentStartJavaScript(ig, gancho, Collections.singleton("https://www.instagram.com"));
+        } catch (Exception ignored) {
+        }
         ig.setWebViewClient(new WebViewClient() {
             @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                view.evaluateJavascript(gancho, null);
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
+                view.evaluateJavascript(gancho + ";window.__tcVarre&&__tcVarre();window.__tcEstado&&__tcEstado();", null);
                 if (url != null && url.startsWith("https://www.instagram.com")) {
                     igPronto = true;
                     for (String c : igFila) ig.evaluateJavascript(c, null);
@@ -237,7 +255,29 @@ public class MainActivity extends Activity {
         });
     }
 
+    private String lerAsset(String nome) {
+        try (InputStream in = getAssets().open(nome)) {
+            ByteArrayOutputStream b = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) b.write(buf, 0, n);
+            return b.toString("UTF-8");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     class PonteIg {
+        @JavascriptInterface
+        public void dados(String texto) {
+            js("window.igDados && window.igDados(" + JSONObject.quote(texto == null ? "" : texto) + ")");
+        }
+
+        @JavascriptInterface
+        public void estado(String texto) {
+            js("window.igEstadoPagina && window.igEstadoPagina(" + JSONObject.quote(texto == null ? "" : texto) + ")");
+        }
+
         @JavascriptInterface
         public void resposta(int id, int status, String corpo) {
             js("window.igResposta && window.igResposta(" + id + "," + status + "," + JSONObject.quote(corpo == null ? "" : corpo) + ")");
@@ -318,6 +358,26 @@ public class MainActivity extends Activity {
                 ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
                 cm.setPrimaryClip(ClipData.newPlainText("Transcrição", texto));
             });
+        }
+
+        @JavascriptInterface
+        public void igAbrir(String url) {
+            if (url == null || !url.startsWith("https://www.instagram.com/")) return;
+            runOnUiThread(() -> {
+                igPronto = false;
+                ig.loadUrl(url);
+            });
+        }
+
+        @JavascriptInterface
+        public void igRolar() {
+            runOnUiThread(() -> ig.evaluateJavascript(
+                    "window.scrollBy(0,Math.max(1500,document.body.scrollHeight));window.__tcVarre&&__tcVarre();", null));
+        }
+
+        @JavascriptInterface
+        public void igPedirEstado() {
+            runOnUiThread(() -> ig.evaluateJavascript("window.__tcVarre&&__tcVarre();window.__tcEstado&&__tcEstado();", null));
         }
 
         @JavascriptInterface
