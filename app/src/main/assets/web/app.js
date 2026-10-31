@@ -490,12 +490,13 @@ function obterWorker() {
   worker = new Worker('worker.js', { type: 'module' });
   worker.onmessage = (ev) => {
     const m = ev.data;
+    ultimoSinal = Date.now();
     if (m.tipo === 'carregando') { modeloPronto = false; }
     else if (m.tipo === 'progresso') {
       arquivosModelo.set(m.arquivo, m);
       let c = 0, t = 0; arquivosModelo.forEach((a) => { c += a.carregado; t += a.total; });
       if (telaAtual === 'resultado' && t > 0 && t - c > 1e6) {
-        $('#pp-sub').textContent = `Baixando o modelo de voz (só na primeira vez): ${Math.round(c / 1e6)} de ${Math.round(t / 1e6)} MB`;
+        $('#pp-sub').textContent = `Baixando o modelo de voz (só na primeira vez): ${Math.round(c / 1e6)} de ${Math.round(t / 1e6)} MB. Dica: o Modo turbo nos Ajustes pula esse download.`;
       }
     } else if (m.tipo === 'pronto') { modeloPronto = true; device = m.device; }
     else if (m.tipo === 'texto' || m.tipo === 'erro') {
@@ -511,6 +512,19 @@ function obterWorker() {
   };
   return worker;
 }
+// vigia: se o download do modelo parar, reinicia; se o turbo for ligado, troca na hora
+class ErroTravou extends Error {}
+let ultimoSinal = Date.now();
+function reiniciarWorker(msg) {
+  try { worker && worker.terminate(); } catch (e) {}
+  worker = null; modeloPronto = false; arquivosModelo.clear();
+  pendentes.forEach((p) => p.falha(new ErroTravou(msg))); pendentes.clear();
+}
+setInterval(() => {
+  if (!pendentes.size) return;
+  if (turboLigado()) { reiniciarWorker('trocando para o turbo'); return; }
+  if (!modeloPronto && Date.now() - ultimoSinal > 45000) reiniciarWorker('o download do modelo parou');
+}, 5000);
 function preaquecer() { if (turboLigado()) return; try { obterWorker().postMessage({ tipo: 'carregar', qualidade: pref.qualidade, gpu: pref.gpu }); } catch (e) {} }
 // ---------- modo turbo (Groq) ----------
 function wavBase64(f32) {
@@ -546,7 +560,16 @@ async function transcreverMelhor(audio) {
       else if (!avisouTurbo) { avisouTurbo = true; aviso('Turbo indisponível agora (' + (e.message || 'erro').slice(0, 40) + '). Usando o celular.'); }
     }
   }
-  return { texto: await transcreverAudio(audio), turbo: false };
+  for (let tent = 0; ; tent++) {
+    try { return { texto: await transcreverAudio(audio), turbo: false }; }
+    catch (e) {
+      if (turboLigado()) {
+        try { return { texto: await transcreverGroq(audio), turbo: true }; } catch (e2) {}
+      }
+      if (!(e instanceof ErroTravou) || tent >= 2) throw e;
+      $('#pp-sub').textContent = 'O download do modelo parou. Tentando de novo…';
+    }
+  }
 }
 
 let idSeq = 0;
@@ -554,7 +577,9 @@ function transcreverAudio(audio) {
   return new Promise((ok, falha) => {
     const id = ++idSeq;
     pendentes.set(id, { ok, falha });
-    obterWorker().postMessage({ tipo: 'transcrever', id, audio, qualidade: pref.qualidade, gpu: pref.gpu, idioma: pref.idioma }, [audio.buffer]);
+    ultimoSinal = Date.now();
+    const copia = audio.slice();
+    obterWorker().postMessage({ tipo: 'transcrever', id, audio: copia, qualidade: pref.qualidade, gpu: pref.gpu, idioma: pref.idioma }, [copia.buffer]);
   });
 }
 
