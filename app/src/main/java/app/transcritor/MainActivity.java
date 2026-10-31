@@ -381,6 +381,84 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void notificar(String tipo, String titulo, String texto, int atual, int total) {
+            runOnUiThread(() -> {
+                try {
+                    android.app.NotificationManager nm = getSystemService(android.app.NotificationManager.class);
+                    if ("inicio".equals(tipo)) {
+                        if (android.os.Build.VERSION.SDK_INT >= 33
+                                && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 9);
+                        }
+                        Intent i = new Intent(MainActivity.this, Trabalho.class);
+                        i.putExtra("titulo", titulo); i.putExtra("texto", texto);
+                        i.putExtra("atual", atual); i.putExtra("total", total);
+                        startForegroundService(i);
+                    } else if ("progresso".equals(tipo)) {
+                        nm.notify(Trabalho.ID_PROGRESSO, Trabalho.progresso(MainActivity.this, titulo, texto, atual, total));
+                    } else if ("fim".equals(tipo)) {
+                        stopService(new Intent(MainActivity.this, Trabalho.class));
+                        nm.cancel(Trabalho.ID_PROGRESSO);
+                        nm.notify(Trabalho.ID_PRONTO, Trabalho.pronto(MainActivity.this, titulo, texto));
+                    } else if ("parar".equals(tipo)) {
+                        stopService(new Intent(MainActivity.this, Trabalho.class));
+                        nm.cancel(Trabalho.ID_PROGRESSO);
+                    }
+                } catch (Exception ignored) {
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void groq(int id, String wavBase64, String chave, String idioma) {
+            new Thread(() -> {
+                int status = 0;
+                String corpo;
+                try {
+                    byte[] audio = android.util.Base64.decode(wavBase64, android.util.Base64.DEFAULT);
+                    String limite = "----transcritor" + System.nanoTime();
+                    HttpURLConnection c = (HttpURLConnection) new URL("https://api.groq.com/openai/v1/audio/transcriptions").openConnection();
+                    c.setDoOutput(true);
+                    c.setConnectTimeout(20000);
+                    c.setReadTimeout(120000);
+                    c.setRequestMethod("POST");
+                    c.setRequestProperty("Authorization", "Bearer " + chave);
+                    c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + limite);
+                    try (OutputStream out = c.getOutputStream()) {
+                        StringBuilder campos = new StringBuilder();
+                        String[][] f = idioma == null || idioma.isEmpty() || "auto".equals(idioma)
+                                ? new String[][]{{"model", "whisper-large-v3-turbo"}, {"response_format", "json"}, {"temperature", "0"}}
+                                : new String[][]{{"model", "whisper-large-v3-turbo"}, {"response_format", "json"}, {"temperature", "0"}, {"language", idioma}};
+                        for (String[] kv : f) {
+                            campos.append("--").append(limite).append("\r\n")
+                                    .append("Content-Disposition: form-data; name=\"").append(kv[0]).append("\"\r\n\r\n")
+                                    .append(kv[1]).append("\r\n");
+                        }
+                        campos.append("--").append(limite).append("\r\n")
+                                .append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
+                                .append("Content-Type: audio/wav\r\n\r\n");
+                        out.write(campos.toString().getBytes(StandardCharsets.UTF_8));
+                        out.write(audio);
+                        out.write(("\r\n--" + limite + "--\r\n").getBytes(StandardCharsets.UTF_8));
+                    }
+                    status = c.getResponseCode();
+                    InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
+                    ByteArrayOutputStream b = new ByteArrayOutputStream();
+                    if (in != null) {
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = in.read(buf)) > 0) b.write(buf, 0, n);
+                        in.close();
+                    }
+                    corpo = b.toString("UTF-8");
+                } catch (Exception e) {
+                    corpo = String.valueOf(e.getMessage());
+                }
+                js("window.groqResposta && window.groqResposta(" + id + "," + status + "," + JSONObject.quote(corpo) + ")");
+            }).start();
+        }
+
+        @JavascriptInterface
         public void igMostrar(boolean sim) {
             mostrarIg(sim);
         }

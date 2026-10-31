@@ -15,7 +15,8 @@ const cdn = (u) => (u ? '/cdn?u=' + encodeURIComponent(u) : '');
 // ---------- preferências ----------
 function ler(k, padrao) { try { const v = localStorage.getItem(k); return v == null ? padrao : JSON.parse(v); } catch (e) { return padrao; } }
 function gravar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
-const pref = Object.assign({ qtd: 9, qualidade: 'rapida', idioma: 'pt', gpu: false, limite: 30 }, ler('pref', {}));
+const pref = Object.assign({ qtd: 9, qualidade: 'rapida', idioma: 'pt', gpu: false, limite: 30, turbo: false, chave: '' }, ler('pref', {}));
+const turboLigado = () => !!(pref.turbo && pref.chave && A.groq);
 
 // ---------- memória: vídeos já transcritos (nunca transcreve de novo) ----------
 let memoria = ler('memoria', {});
@@ -59,7 +60,7 @@ function ir(nome) {
 window.voltar = () => {
   const aberta = $('.folha.on');
   if (aberta) { fecharFolhas(); return true; }
-  if (telaAtual === 'resultado') { ir(E.sessao && E.sessao.doHistorico ? 'inicio' : 'videos'); return true; }
+  if (telaAtual === 'resultado') { if (!E.rodando) esquecerSessao(); ir(E.sessao && E.sessao.doHistorico ? 'inicio' : (E.videos.length ? 'videos' : 'inicio')); return true; }
   if (telaAtual === 'videos') { ir('inicio'); return true; }
   return false;
 };
@@ -105,6 +106,9 @@ function pintarAjustes() {
   $$('[data-grupo="qualidade"] button').forEach((b) => b.classList.toggle('sel', b.dataset.v === pref.qualidade));
   $$('[data-grupo="idioma"] button').forEach((b) => b.classList.toggle('sel', b.dataset.v === pref.idioma));
   $$('[data-grupo="limite"] button').forEach((b) => b.classList.toggle('sel', +b.dataset.v === pref.limite));
+  $('#chk-turbo').checked = !!pref.turbo;
+  $('#in-chave').value = pref.chave || '';
+  $('#bloco-chave').classList.toggle('oculto', !pref.turbo);
   $('#mem-info').textContent = `${Object.keys(memoria).length} vídeos na memória · o arquivo leva os ${pref.limite} mais recentes`;
   $('#chk-gpu').checked = !!pref.gpu;
   $('#versao').textContent = 'Transcritor ' + (A.versao ? A.versao() : '');
@@ -119,6 +123,17 @@ $('#btn-limpar-mem').addEventListener('click', () => {
   limparPend = false; memoria = {}; gravar('memoria', memoria); pintarAjustes(); aviso('Memória apagada');
 });
 $('#chk-gpu').addEventListener('change', (e) => { pref.gpu = e.target.checked; salvarPref(); });
+$('#chk-turbo').addEventListener('change', (e) => {
+  pref.turbo = e.target.checked; salvarPref(); pintarAjustes();
+  if (pref.turbo && !pref.chave) setTimeout(() => $('#in-chave').focus(), 300);
+});
+$('#in-chave').addEventListener('change', (e) => { pref.chave = e.target.value.trim(); salvarPref(); aviso(pref.chave ? 'Chave salva ⚡' : 'Chave apagada'); });
+$('#btn-colar-chave').addEventListener('click', () => {
+  const t = (A.colar ? A.colar() : '').trim();
+  if (!/^gsk_/.test(t)) return aviso('Copie a chave no site do Groq (começa com gsk_)');
+  pref.chave = t; salvarPref(); pintarAjustes(); aviso('Chave salva ⚡');
+});
+$('#btn-criar-chave').addEventListener('click', () => A.abrirLink('https://console.groq.com/keys'));
 $('#btn-ajustes').addEventListener('click', () => { pintarAjustes(); abrirFolha('f-ajustes'); });
 $('#btn-ajustes2').addEventListener('click', () => { pintarAjustes(); abrirFolha('f-ajustes'); });
 
@@ -496,7 +511,44 @@ function obterWorker() {
   };
   return worker;
 }
-function preaquecer() { try { obterWorker().postMessage({ tipo: 'carregar', qualidade: pref.qualidade, gpu: pref.gpu }); } catch (e) {} }
+function preaquecer() { if (turboLigado()) return; try { obterWorker().postMessage({ tipo: 'carregar', qualidade: pref.qualidade, gpu: pref.gpu }); } catch (e) {} }
+// ---------- modo turbo (Groq) ----------
+function wavBase64(f32) {
+  const n = f32.length, buf = new ArrayBuffer(44 + n * 2), dv = new DataView(buf);
+  const txt = (o, t) => { for (let i = 0; i < t.length; i++) dv.setUint8(o + i, t.charCodeAt(i)); };
+  txt(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); txt(8, 'WAVE'); txt(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  txt(36, 'data'); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) { const x = Math.max(-1, Math.min(1, f32[i])); dv.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+  const u8 = new Uint8Array(buf); let bin = '';
+  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+const groqPend = new Map();
+let groqSeq = 0;
+window.groqResposta = (id, status, corpo) => { const p = groqPend.get(id); if (p) { groqPend.delete(id); p({ status, corpo }); } };
+class ErroChave extends Error {}
+async function transcreverGroq(audio) {
+  const id = ++groqSeq;
+  const { status, corpo } = await new Promise((ok) => { groqPend.set(id, ok); A.groq(id, wavBase64(audio), pref.chave, pref.idioma); });
+  let j = null; try { j = JSON.parse(corpo); } catch (e) {}
+  if (status === 401 || status === 403) throw new ErroChave('chave do Groq recusada');
+  if (status !== 200 || !j) throw new Error((j && j.error && j.error.message) || ('Groq ' + status));
+  return String(j.text || '').replace(/\s+/g, ' ').trim();
+}
+let avisouTurbo = false;
+async function transcreverMelhor(audio) {
+  if (turboLigado()) {
+    try { return { texto: await transcreverGroq(audio), turbo: true }; }
+    catch (e) {
+      if (e instanceof ErroChave) { pref.turbo = false; salvarPref(); aviso('A chave do Groq foi recusada. Voltei para o modo do celular.'); }
+      else if (!avisouTurbo) { avisouTurbo = true; aviso('Turbo indisponível agora (' + (e.message || 'erro').slice(0, 40) + '). Usando o celular.'); }
+    }
+  }
+  return { texto: await transcreverAudio(audio), turbo: false };
+}
+
 let idSeq = 0;
 function transcreverAudio(audio) {
   return new Promise((ok, falha) => {
@@ -635,7 +687,7 @@ async function rodar() {
   if (E.rodando) { E.cancelar = true; while (E.rodando) await new Promise((r) => setTimeout(r, 100)); }
   E.rodando = true; E.cancelar = false;
   A.manterTelaLigada(true);
-  $('#pp-sub').textContent = modeloPronto ? '' : 'Ligando o motor de transcrição…';
+  $('#pp-sub').textContent = turboLigado() ? 'Modo turbo ⚡' : (modeloPronto ? '' : 'Ligando o motor de transcrição…');
   let proximoAudio = null;
   s.itens.forEach((v) => {
     if (v.estado !== 'pronto' && jaFeito(v.codigo)) { v.transcricao = memoria[v.codigo].transcricao; v.estado = 'pronto'; v.reuso = true; }
@@ -644,6 +696,10 @@ async function rodar() {
   const pendente = (i) => s.itens[i] && s.itens[i].estado !== 'pronto';
   const proxPendente = (i) => { while (i < s.itens.length && !pendente(i)) i++; return i; };
   const carregarAudio = (i) => (i < s.itens.length ? audioDe(s.itens[i]).then((a) => ({ a }), (e) => ({ e })) : null);
+  const totalN = s.itens.length;
+  const feitosN = () => s.itens.filter((x) => ['pronto', 'erro', 'cancelado'].includes(x.estado)).length;
+  try { A.notificar && A.notificar('inicio', `Transcrevendo @${s.perfil.nome}`, `${feitosN()} de ${totalN} prontos`, feitosN(), totalN); } catch (e) {}
+  guardarSessao();
   let iProx = proxPendente(0);
   proximoAudio = carregarAudio(iProx);
   for (let i = iProx; i < s.itens.length; i = proxPendente(i + 1)) {
@@ -656,16 +712,19 @@ async function rodar() {
     if (res.e) { v.estado = 'erro'; v.erro = res.e.message; pintarItem(i); pintarPainel(); continue; }
     v.estado = 'ouvindo'; pintarItem(i);
     try {
-      v.transcricao = await transcreverAudio(res.a);
+      const tr = await transcreverMelhor(res.a);
+      v.transcricao = tr.texto;
       v.estado = 'pronto'; v.ms = Date.now() - t0;
       lembrar(v, s.perfil.nome);
+      if (tr.turbo) $('#pp-sub').textContent = 'Modo turbo ⚡';
       if (!$('#pp-sub').textContent.startsWith('Baixando')) $('#pp-sub').textContent = device === 'webgpu' ? 'Usando a GPU do celular' : '';
       else $('#pp-sub').textContent = '';
       A.toque();
     } catch (e) {
       v.estado = 'erro'; v.erro = (e.message || 'erro').slice(0, 60);
     }
-    pintarItem(i); pintarPainel();
+    pintarItem(i); pintarPainel(); guardarSessao();
+    try { A.notificar && A.notificar('progresso', `Transcrevendo @${s.perfil.nome}`, `${feitosN()} de ${totalN} prontos`, feitosN(), totalN); } catch (e) {}
     if (i === 0 && v.estado === 'pronto') $('#r-0').classList.add('aberto');
   }
   if (E.sessao === s) {
@@ -673,9 +732,34 @@ async function rodar() {
     s.fim = Date.now();
     pintarPainel();
     guardarHistorico(s);
+    guardarSessao();
+    const ok = s.itens.filter((x) => x.estado === 'pronto').length;
+    try { A.notificar && A.notificar('fim', `${ok} transcrições prontas ✓`, `@${s.perfil.nome} · toque para ver`, totalN, totalN); } catch (e) {}
+  } else {
+    try { A.notificar && A.notificar('parar', '', '', 0, 0); } catch (e) {}
   }
   A.manterTelaLigada(false);
   E.rodando = false;
+}
+
+// ---------- sessão atual (volta para ela se o Android fechar o app) ----------
+function guardarSessao() {
+  const s = E.sessao;
+  if (!s || s.doHistorico) return;
+  gravar('sessaoAtual', { ...s, salvoEm: Date.now() });
+}
+function esquecerSessao() { try { localStorage.removeItem('sessaoAtual'); } catch (e) {} }
+function restaurarSessao() {
+  const s = ler('sessaoAtual', null);
+  if (!s || !s.itens || !s.perfil) return;
+  const pend = s.itens.some((v) => ['fila', 'baixando', 'ouvindo'].includes(v.estado));
+  if (Date.now() - (s.salvoEm || 0) > 6 * 3600 * 1000) { esquecerSessao(); return; }
+  if (!pend && Date.now() - (s.fim || 0) > 30 * 60 * 1000) return;
+  s.itens.forEach((v) => { if (v.estado === 'baixando' || v.estado === 'ouvindo') v.estado = 'fila'; });
+  E.sessao = s; E.perfil = s.perfil;
+  pintarResultado();
+  ir('resultado');
+  if (pend) { s.fim = null; aviso('Continuando de onde parou…'); rodar(); }
 }
 
 // ---------- markdown ----------
@@ -751,3 +835,4 @@ function pintarRecentes() {
 
 // ---------- início ----------
 pintarQtd(); pintarAjustes(); atualizarConta(); pintarRecentes();
+restaurarSessao();
