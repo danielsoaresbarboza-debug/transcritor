@@ -15,7 +15,32 @@ const cdn = (u) => (u ? '/cdn?u=' + encodeURIComponent(u) : '');
 // ---------- preferências ----------
 function ler(k, padrao) { try { const v = localStorage.getItem(k); return v == null ? padrao : JSON.parse(v); } catch (e) { return padrao; } }
 function gravar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
-const pref = Object.assign({ qtd: 9, qualidade: 'rapida', idioma: 'pt', gpu: false }, ler('pref', {}));
+const pref = Object.assign({ qtd: 9, qualidade: 'rapida', idioma: 'pt', gpu: false, limite: 30 }, ler('pref', {}));
+
+// ---------- memória: vídeos já transcritos (nunca transcreve de novo) ----------
+let memoria = ler('memoria', {});
+function lembrar(v, perfil) {
+  memoria[v.codigo] = {
+    codigo: v.codigo, perfil, descricao: v.descricao || '', transcricao: v.transcricao || '',
+    data: v.data || null, duracao: v.duracao || null, views: v.views || null, em: Date.now(),
+  };
+  const chaves = Object.keys(memoria);
+  if (chaves.length > 400) chaves.sort((a, b) => memoria[a].em - memoria[b].em).slice(0, chaves.length - 400).forEach((k) => delete memoria[k]);
+  gravar('memoria', memoria);
+}
+if (!Object.keys(memoria).length) {
+  // primeira vez: aproveita o que já está no histórico
+  for (const h of ler('historico', []).slice().reverse()) {
+    for (const v of h.itens || []) if (v.estado === 'pronto' && v.codigo && !memoria[v.codigo]) {
+      memoria[v.codigo] = { codigo: v.codigo, perfil: (h.perfil && h.perfil.nome) || '', descricao: v.descricao || '', transcricao: v.transcricao || '', data: v.data || null, duracao: v.duracao || null, views: v.views || null, em: h.fim || h.id || Date.now() };
+    }
+  }
+  gravar('memoria', memoria);
+}
+const jaFeito = (codigo) => !!(memoria[codigo] && memoria[codigo].em);
+function acumulado() {
+  return Object.values(memoria).sort((a, b) => b.em - a.em).slice(0, pref.limite || 30);
+}
 const salvarPref = () => gravar('pref', pref);
 
 // ---------- estado ----------
@@ -79,12 +104,20 @@ window.aoEntrar = (ok) => {
 function pintarAjustes() {
   $$('[data-grupo="qualidade"] button').forEach((b) => b.classList.toggle('sel', b.dataset.v === pref.qualidade));
   $$('[data-grupo="idioma"] button').forEach((b) => b.classList.toggle('sel', b.dataset.v === pref.idioma));
+  $$('[data-grupo="limite"] button').forEach((b) => b.classList.toggle('sel', +b.dataset.v === pref.limite));
+  $('#mem-info').textContent = `${Object.keys(memoria).length} vídeos na memória · o arquivo leva os ${pref.limite} mais recentes`;
   $('#chk-gpu').checked = !!pref.gpu;
   $('#versao').textContent = 'Transcritor ' + (A.versao ? A.versao() : '');
 }
 $$('[data-grupo] button').forEach((b) => b.addEventListener('click', () => {
-  pref[b.parentElement.dataset.grupo] = b.dataset.v; salvarPref(); pintarAjustes(); A.toque();
+  const g = b.parentElement.dataset.grupo;
+  pref[g] = g === 'limite' ? +b.dataset.v : b.dataset.v; salvarPref(); pintarAjustes(); A.toque();
 }));
+let limparPend = false;
+$('#btn-limpar-mem').addEventListener('click', () => {
+  if (!limparPend) { limparPend = true; aviso('Toque de novo para apagar a memória'); setTimeout(() => { limparPend = false; }, 4000); return; }
+  limparPend = false; memoria = {}; gravar('memoria', memoria); pintarAjustes(); aviso('Memória apagada');
+});
 $('#chk-gpu').addEventListener('change', (e) => { pref.gpu = e.target.checked; salvarPref(); });
 $('#btn-ajustes').addEventListener('click', () => { pintarAjustes(); abrirFolha('f-ajustes'); });
 $('#btn-ajustes2').addEventListener('click', () => { pintarAjustes(); abrirFolha('f-ajustes'); });
@@ -357,7 +390,7 @@ async function buscar(nome) {
   try {
     const r = await buscarPerfil(nome, pref.qtd);
     E.perfil = r.perfil; E.videos = r.videos;
-    E.sel = new Set(r.videos.slice(0, pref.qtd).map((v) => v.codigo));
+    E.sel = new Set(r.videos.filter((v) => !jaFeito(v.codigo)).slice(0, pref.qtd).map((v) => v.codigo));
     pintarVideos(r.limitado);
     ir('videos');
     preaquecer();
@@ -405,6 +438,7 @@ function pintarVideos(limitado) {
   const bm = $('#btn-mais'); if (bm) bm.onclick = () => { depoisDoLogin = () => buscar(p.nome); A.entrar(); };
   $('#grade').innerHTML = E.videos.map((v, i) => `
     <button type="button" class="vid ${E.sel.has(v.codigo) ? 'sel' : ''}" data-c="${esc(v.codigo)}" style="animation-delay:${Math.min(i, 18) * 30}ms">
+      ${jaFeito(v.codigo) ? '<span class="feito">✓ já transcrito</span>' : ''}
       ${v.thumb ? `<img loading="lazy" src="${cdn(v.thumb)}" alt="">` : ''}
       <span class="marca-sel"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
       <span class="dur">${fmtDur(v.duracao)}</span>
@@ -487,7 +521,13 @@ async function audioDe(v) {
     } catch (e) {}
     if (!url) throw new Error('Não consegui o link do vídeo');
   }
-  const r = await fetch(cdn(url));
+  let r = await fetch(cdn(url)).catch(() => ({ ok: false, status: 0 }));
+  if (!r.ok && temCaptura()) {
+    // o link do vídeo expira: pega um novo abrindo o post e tenta de novo
+    cap.midias.delete(v.codigo);
+    const m = await capturarPost(v.codigo, (x) => !!x.video);
+    if (m && m.video) { url = v.video = m.video; r = await fetch(cdn(url)).catch(() => ({ ok: false, status: 0 })); }
+  }
   if (!r.ok) throw new Error('Falha ao baixar o vídeo (' + r.status + ')');
   const buf = await r.arrayBuffer();
   const ctx = new OfflineAudioContext(1, 16000, 16000);
@@ -546,13 +586,20 @@ function pintarResultado() {
   });
   pintarPainel();
 }
+function tentarDeNovo() {
+  const s = E.sessao;
+  if (!s || E.rodando) return;
+  s.itens.forEach((v, i) => { if (v.estado === 'erro' || v.estado === 'cancelado') { v.estado = 'fila'; v.erro = ''; pintarItem(i); } });
+  s.fim = null; rodar();
+}
 function pintarItem(i) {
   const v = E.sessao.itens[i], el = $('#r-' + i);
   if (!el) return;
   const [cls, txt] = ESTADOS[v.estado] || ESTADOS.fila;
   const p = $('[data-p]', el);
   p.className = 'pilula ' + cls;
-  p.textContent = v.estado === 'erro' && v.erro ? 'Falhou · ' + v.erro : txt;
+  p.textContent = v.estado === 'erro' ? 'Falhou · toque para tentar de novo' : (v.estado === 'pronto' && v.reuso ? 'Já transcrito antes' : txt);
+  p.onclick = v.estado === 'erro' ? (ev) => { ev.stopPropagation(); tentarDeNovo(); } : null;
   const t = $('[data-t]', el);
   t.textContent = v.transcricao || (v.estado === 'pronto' ? 'Sem fala no vídeo (provavelmente só música)' : 'Aguardando…');
   t.className = v.transcricao ? '' : 'vazio';
@@ -578,8 +625,9 @@ function pintarPainel() {
       $('#pp-eta').textContent = rest > 90 ? `~${Math.round(rest / 60)} min` : `~${rest} s`;
     } else $('#pp-eta').textContent = '';
   }
-  $('#btn-enviar').disabled = !prontos;
-  $('#btn-copiar-tudo').disabled = !prontos;
+  $('#btn-enviar').disabled = !acumulado().length;
+  $('#btn-copiar-tudo').disabled = !acumulado().length;
+  $('#btn-enviar span').textContent = `Enviar .md (${acumulado().length})`;
 }
 
 async function rodar() {
@@ -589,20 +637,28 @@ async function rodar() {
   A.manterTelaLigada(true);
   $('#pp-sub').textContent = modeloPronto ? '' : 'Ligando o motor de transcrição…';
   let proximoAudio = null;
+  s.itens.forEach((v) => {
+    if (v.estado !== 'pronto' && jaFeito(v.codigo)) { v.transcricao = memoria[v.codigo].transcricao; v.estado = 'pronto'; v.reuso = true; }
+  });
+  s.itens.forEach((v, i) => pintarItem(i)); pintarPainel();
+  const pendente = (i) => s.itens[i] && s.itens[i].estado !== 'pronto';
+  const proxPendente = (i) => { while (i < s.itens.length && !pendente(i)) i++; return i; };
   const carregarAudio = (i) => (i < s.itens.length ? audioDe(s.itens[i]).then((a) => ({ a }), (e) => ({ e })) : null);
-  proximoAudio = carregarAudio(0);
-  for (let i = 0; i < s.itens.length; i++) {
+  let iProx = proxPendente(0);
+  proximoAudio = carregarAudio(iProx);
+  for (let i = iProx; i < s.itens.length; i = proxPendente(i + 1)) {
     if (E.cancelar || E.sessao !== s) break;
     const v = s.itens[i];
     const t0 = Date.now();
-    v.estado = 'baixando'; pintarItem(i); pintarPainel();
+    v.estado = 'baixando'; v.erro = ''; pintarItem(i); pintarPainel();
     const res = await proximoAudio;
-    proximoAudio = carregarAudio(i + 1);
+    proximoAudio = carregarAudio(proxPendente(i + 1));
     if (res.e) { v.estado = 'erro'; v.erro = res.e.message; pintarItem(i); pintarPainel(); continue; }
     v.estado = 'ouvindo'; pintarItem(i);
     try {
       v.transcricao = await transcreverAudio(res.a);
       v.estado = 'pronto'; v.ms = Date.now() - t0;
+      lembrar(v, s.perfil.nome);
       if (!$('#pp-sub').textContent.startsWith('Baixando')) $('#pp-sub').textContent = device === 'webgpu' ? 'Usando a GPU do celular' : '';
       else $('#pp-sub').textContent = '';
       A.toque();
@@ -645,8 +701,25 @@ function nomeArquivo(s) {
   const d = new Date(s.fim || Date.now()), z = (n) => String(n).padStart(2, '0');
   return `${s.perfil.nome}-${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}.md`;
 }
-$('#btn-enviar').addEventListener('click', () => { A.toque(); A.compartilhar(nomeArquivo(E.sessao), gerarMd(E.sessao)); });
-$('#btn-copiar-tudo').addEventListener('click', () => { A.copiar(gerarMd(E.sessao)); aviso('Tudo copiado em Markdown'); });
+function gerarMdAcumulado() {
+  const lista = acumulado();
+  const agora = new Date();
+  const perfis = [...new Set(lista.map((m) => '@' + m.perfil))];
+  const linhas = [
+    `# Transcrições · acumulado (${perfis.join(', ')})`,
+    `Atualizado em ${agora.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })} · ${lista.length} vídeos (os ${pref.limite} mais recentes)`,
+    '', '---', '',
+  ];
+  lista.forEach((m, i) => {
+    const info = [m.data ? 'Publicado: ' + new Date(m.data * 1000).toLocaleDateString('pt-BR') : '', m.duracao ? 'Duração: ' + fmtDur(m.duracao) : '', m.views ? 'Visualizações: ' + m.views.toLocaleString('pt-BR') : ''].filter(Boolean).join(' · ');
+    linhas.push(`## ${i + 1}. ${tituloDe(m, i)}`, `Perfil: @${m.perfil}  `, `Link: https://www.instagram.com/reel/${m.codigo}/  `, info, '',
+      '### Transcrição do áudio', m.transcricao || '_(sem fala detectada)_', '',
+      '### Descrição do post', m.descricao || '_(sem descrição)_', '', '---', '');
+  });
+  return linhas.join('\n');
+}
+$('#btn-enviar').addEventListener('click', () => { A.toque(); A.compartilhar('Transcricoes-acumulado.md', gerarMdAcumulado()); });
+$('#btn-copiar-tudo').addEventListener('click', () => { A.copiar(gerarMdAcumulado()); aviso(`Arquivo acumulado copiado (${acumulado().length} vídeos)`); });
 
 // ---------- histórico ----------
 function guardarHistorico(s) {

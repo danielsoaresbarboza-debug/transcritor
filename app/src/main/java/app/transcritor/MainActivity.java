@@ -487,6 +487,20 @@ public class MainActivity extends Activity {
 
     private Uri gravar(String nome, String conteudo) {
         try {
+            String pasta = Environment.DIRECTORY_DOWNLOADS + "/Transcritor/";
+            try (android.database.Cursor c = getContentResolver().query(MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    new String[]{MediaStore.MediaColumns._ID},
+                    MediaStore.MediaColumns.DISPLAY_NAME + "=? AND " + MediaStore.MediaColumns.RELATIVE_PATH + "=?",
+                    new String[]{nome, pasta}, null)) {
+                if (c != null && c.moveToFirst()) {
+                    Uri existente = android.content.ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0));
+                    try (OutputStream out = getContentResolver().openOutputStream(existente, "wt")) {
+                        out.write(conteudo.getBytes(StandardCharsets.UTF_8));
+                    }
+                    return existente;
+                }
+            } catch (Exception ignored) {
+            }
             ContentValues v = new ContentValues();
             v.put(MediaStore.MediaColumns.DISPLAY_NAME, nome);
             v.put(MediaStore.MediaColumns.MIME_TYPE, "text/markdown");
