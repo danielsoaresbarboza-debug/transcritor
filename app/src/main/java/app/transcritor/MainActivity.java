@@ -26,7 +26,18 @@ import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
+
+import android.media.MediaCodec;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
+import android.media.MediaMetadataRetriever;
+import android.media.MediaMuxer;
+import android.provider.OpenableColumns;
+import java.io.File;
+import java.io.FileInputStream;
+import java.nio.ByteBuffer;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -54,6 +65,8 @@ public class MainActivity extends Activity {
     private boolean igVisivel = false;
     private String compartilhadoPendente = null;
     private boolean paginaPronta = false;
+    private String arquivosPendentes = null;
+    static final int PEDIR_ARQUIVO = 11;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -95,6 +108,11 @@ public class MainActivity extends Activity {
                         String alvo = "https://www.instagram.com/" + path.substring(4)
                                 + (u.getEncodedQuery() != null ? "?" + u.getEncodedQuery() : "");
                         return proxy(alvo, true);
+                    }
+                    if (path.equals("/arquivo")) {
+                        String alvo = u.getQueryParameter("u");
+                        if (alvo == null) return erro(400, "sem arquivo");
+                        return arquivo(Uri.parse(alvo));
                     }
                     if (path.equals("/cdn")) {
                         String alvo = u.getQueryParameter("u");
@@ -190,6 +208,151 @@ public class MainActivity extends Activity {
     private WebResourceResponse erro(int status, String msg) {
         return new WebResourceResponse("text/plain", "utf-8", status, "Erro", cabecalhos(),
                 new ByteArrayInputStream(msg.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    // ---------- arquivos do celular (extrai só o áudio do vídeo) ----------
+
+    private WebResourceResponse arquivo(Uri uri) throws Exception {
+        String[] tipo = new String[1];
+        File f = null;
+        try {
+            f = extrairAudio(uri, tipo);
+        } catch (Exception ignored) {
+        }
+        if (f != null) return new WebResourceResponse(tipo[0], null, 200, "OK", cabecalhos(), new FileInputStream(f));
+        InputStream in = getContentResolver().openInputStream(uri);
+        if (in == null) return erro(404, "arquivo sumiu");
+        String mime = getContentResolver().getType(uri);
+        return new WebResourceResponse(mime == null ? "application/octet-stream" : mime, null, 200, "OK", cabecalhos(), in);
+    }
+
+    /** Copia a faixa de áudio do vídeo para um .m4a (ou .webm) sem recodificar. Devolve null se não der. */
+    private File extrairAudio(Uri uri, String[] tipoSaida) throws Exception {
+        String chave = Integer.toHexString(uri.toString().hashCode());
+        File m4a = new File(getCacheDir(), "audio-" + chave + ".m4a");
+        File webm = new File(getCacheDir(), "audio-" + chave + ".webm");
+        if (m4a.length() > 0) { tipoSaida[0] = "audio/mp4"; return m4a; }
+        if (webm.length() > 0) { tipoSaida[0] = "audio/webm"; return webm; }
+        MediaExtractor ex = new MediaExtractor();
+        MediaMuxer mx = null;
+        File saida = null;
+        try {
+            ex.setDataSource(this, uri, null);
+            int faixa = -1;
+            MediaFormat fmt = null;
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                MediaFormat f = ex.getTrackFormat(i);
+                String m = f.getString(MediaFormat.KEY_MIME);
+                if (m != null && m.startsWith("audio/")) { faixa = i; fmt = f; break; }
+            }
+            if (faixa < 0) throw new Exception("sem áudio");
+            String mime = fmt.getString(MediaFormat.KEY_MIME);
+            int formato;
+            if ("audio/mp4a-latm".equals(mime)) { formato = MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4; saida = m4a; tipoSaida[0] = "audio/mp4"; }
+            else if ("audio/opus".equals(mime) || "audio/vorbis".equals(mime)) { formato = MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM; saida = webm; tipoSaida[0] = "audio/webm"; }
+            else return null;
+            File tmp = new File(getCacheDir(), saida.getName() + ".tmp");
+            mx = new MediaMuxer(tmp.getAbsolutePath(), formato);
+            int t = mx.addTrack(fmt);
+            mx.start();
+            ex.selectTrack(faixa);
+            int tam = fmt.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE) ? Math.max(fmt.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE), 1 << 16) : 1 << 20;
+            ByteBuffer buf = ByteBuffer.allocate(tam);
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            while (true) {
+                int n = ex.readSampleData(buf, 0);
+                if (n < 0) break;
+                info.offset = 0;
+                info.size = n;
+                info.presentationTimeUs = Math.max(0, ex.getSampleTime());
+                info.flags = (ex.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0 ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+                mx.writeSampleData(t, buf, info);
+                ex.advance();
+            }
+            mx.stop();
+            mx.release();
+            mx = null;
+            if (!tmp.renameTo(saida)) return null;
+            limparCache();
+            return saida;
+        } finally {
+            try { ex.release(); } catch (Exception ignored) {}
+            if (mx != null) try { mx.release(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void limparCache() {
+        File[] fs = getCacheDir().listFiles((d, n) -> n.startsWith("audio-"));
+        if (fs == null || fs.length <= 20) return;
+        java.util.Arrays.sort(fs, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+        for (int i = 0; i < fs.length - 20; i++) fs[i].delete();
+    }
+
+    private JSONObject infoArquivo(Uri uri) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("uri", uri.toString());
+            String nome = null;
+            long tam = 0;
+            try (android.database.Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+                if (c != null && c.moveToFirst()) {
+                    int i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    if (i >= 0) nome = c.getString(i);
+                    int j = c.getColumnIndex(OpenableColumns.SIZE);
+                    if (j >= 0 && !c.isNull(j)) tam = c.getLong(j);
+                }
+            } catch (Exception ignored) {
+            }
+            o.put("nome", nome == null ? "arquivo" : nome);
+            o.put("tamanho", tam);
+            String mime = getContentResolver().getType(uri);
+            o.put("tipo", mime == null ? "" : mime);
+            MediaMetadataRetriever r = new MediaMetadataRetriever();
+            try {
+                r.setDataSource(this, uri);
+                String d = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                if (d != null) o.put("duracao", Long.parseLong(d) / 1000.0);
+            } catch (Exception ignored) {
+            } finally {
+                try { r.release(); } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {
+        }
+        return o;
+    }
+
+    private void receberArquivos(List<Uri> uris, boolean persistir) {
+        new Thread(() -> {
+            JSONArray lista = new JSONArray();
+            for (Uri u : uris) {
+                if (persistir) {
+                    try { getContentResolver().takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) {}
+                }
+                lista.put(infoArquivo(u));
+            }
+            arquivosPendentes = lista.toString();
+            runOnUiThread(this::entregarCompartilhado);
+        }).start();
+    }
+
+    private Uri gravarAudio(Uri uri, String nome) throws Exception {
+        String[] tipo = new String[1];
+        File f = extrairAudio(uri, tipo);
+        if (f == null) throw new Exception("formato de áudio não suportado");
+        String base = nome == null ? "audio" : nome.replaceAll("\\.[A-Za-z0-9]{2,4}$", "");
+        String ext = f.getName().endsWith(".webm") ? ".webm" : ".m4a";
+        ContentValues v = new ContentValues();
+        v.put(MediaStore.MediaColumns.DISPLAY_NAME, base + ext);
+        v.put(MediaStore.MediaColumns.MIME_TYPE, tipo[0]);
+        v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Transcritor");
+        Uri destino = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+        if (destino == null) throw new Exception("não consegui criar o arquivo");
+        try (InputStream in = new FileInputStream(f); OutputStream out = getContentResolver().openOutputStream(destino)) {
+            byte[] b = new byte[65536];
+            int n;
+            while ((n = in.read(b)) > 0) out.write(b, 0, n);
+        }
+        return destino;
     }
 
     // ---------- página escondida do Instagram (faz as buscas como o próprio site) ----------
@@ -300,14 +463,33 @@ public class MainActivity extends Activity {
         entregarCompartilhado();
     }
 
+    @SuppressWarnings("deprecation")
     private void tratarIntent(Intent intent) {
-        if (intent != null && Intent.ACTION_SEND.equals(intent.getAction())) {
+        if (intent == null) return;
+        String tipo = intent.getType() == null ? "" : intent.getType();
+        boolean midia = tipo.startsWith("video/") || tipo.startsWith("audio/");
+        if (midia && Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction())) {
+            ArrayList<Uri> us = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (us != null && !us.isEmpty()) receberArquivos(us, false);
+            return;
+        }
+        if (midia && Intent.ACTION_SEND.equals(intent.getAction())) {
+            Uri u = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (u != null) { List<Uri> l = new ArrayList<>(); l.add(u); receberArquivos(l, false); }
+            return;
+        }
+        if (Intent.ACTION_SEND.equals(intent.getAction())) {
             String t = intent.getStringExtra(Intent.EXTRA_TEXT);
             if (t != null) compartilhadoPendente = t;
         }
     }
 
     private void entregarCompartilhado() {
+        if (paginaPronta && arquivosPendentes != null) {
+            String a = arquivosPendentes;
+            arquivosPendentes = null;
+            js("window.aoArquivos && window.aoArquivos(" + JSONObject.quote(a) + ")");
+        }
         if (!paginaPronta || compartilhadoPendente == null) return;
         String t = compartilhadoPendente;
         compartilhadoPendente = null;
@@ -334,6 +516,17 @@ public class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PEDIR_ARQUIVO) {
+            List<Uri> us = new ArrayList<>();
+            if (resultCode == RESULT_OK && data != null) {
+                if (data.getClipData() != null) {
+                    for (int i = 0; i < data.getClipData().getItemCount(); i++) us.add(data.getClipData().getItemAt(i).getUri());
+                } else if (data.getData() != null) us.add(data.getData());
+            }
+            if (us.isEmpty()) js("window.aoArquivos && window.aoArquivos('[]')");
+            else receberArquivos(us, true);
+            return;
+        }
         if (requestCode == 7) carregarIg();
         if (requestCode == 7) js("window.aoEntrar && window.aoEntrar(" + logado() + ")");
     }
@@ -455,6 +648,42 @@ public class MainActivity extends Activity {
                     corpo = String.valueOf(e.getMessage());
                 }
                 js("window.groqResposta && window.groqResposta(" + id + "," + status + "," + JSONObject.quote(corpo) + ")");
+            }).start();
+        }
+
+        @JavascriptInterface
+        @SuppressWarnings("deprecation")
+        public void escolherArquivo() {
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("*/*");
+                i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"video/*", "audio/*"});
+                i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                try {
+                    startActivityForResult(i, PEDIR_ARQUIVO);
+                } catch (Exception e) {
+                    Intent g = new Intent(Intent.ACTION_GET_CONTENT);
+                    g.setType("video/*");
+                    g.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                    startActivityForResult(g, PEDIR_ARQUIVO);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void salvarAudio(String uri, String nome) {
+            new Thread(() -> {
+                String msg;
+                boolean ok = false;
+                try {
+                    gravarAudio(Uri.parse(uri), nome);
+                    ok = true;
+                    msg = "Áudio salvo em Downloads/Transcritor";
+                } catch (Exception e) {
+                    msg = "Não consegui extrair o áudio: " + e.getMessage();
+                }
+                js("window.aoSalvarAudio && window.aoSalvarAudio(" + ok + "," + JSONObject.quote(msg) + ")");
             }).start();
         }
 

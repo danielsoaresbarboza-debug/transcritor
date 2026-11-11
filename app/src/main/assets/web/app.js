@@ -18,12 +18,14 @@ function gravar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catc
 const pref = Object.assign({ qtd: 9, qualidade: 'rapida', idioma: 'pt', gpu: false, limite: 30, turbo: false, chave: '' }, ler('pref', {}));
 const turboLigado = () => !!(pref.turbo && pref.chave && A.groq);
 
+const nomeArq = (v) => (v && v.arquivo ? (typeof v.arquivo === 'string' ? v.arquivo : v.arquivo.nome) : '');
 // ---------- memória: vídeos já transcritos (nunca transcreve de novo) ----------
 let memoria = ler('memoria', {});
 function lembrar(v, perfil) {
   memoria[v.codigo] = {
     codigo: v.codigo, perfil, descricao: v.descricao || '', transcricao: v.transcricao || '',
     data: v.data || null, duracao: v.duracao || null, views: v.views || null, em: Date.now(),
+    arquivo: nomeArq(v) || undefined,
   };
   const chaves = Object.keys(memoria);
   if (chaves.length > 400) chaves.sort((a, b) => memoria[a].em - memoria[b].em).slice(0, chaves.length - 400).forEach((k) => delete memoria[k]);
@@ -544,6 +546,17 @@ let groqSeq = 0;
 window.groqResposta = (id, status, corpo) => { const p = groqPend.get(id); if (p) { groqPend.delete(id); p({ status, corpo }); } };
 class ErroChave extends Error {}
 async function transcreverGroq(audio) {
+  // áudios longos vão em pedaços de 5 min (limite de tamanho do Groq)
+  const PEDACO = 16000 * 300;
+  if (audio.length <= PEDACO) return transcreverGroqUm(audio);
+  const partes = [];
+  for (let i = 0; i < audio.length; i += PEDACO) {
+    if (audio.length > PEDACO * 2) $('#pp-sub').textContent = `Modo turbo ⚡ · parte ${Math.floor(i / PEDACO) + 1} de ${Math.ceil(audio.length / PEDACO)}`;
+    partes.push(await transcreverGroqUm(audio.subarray(i, i + PEDACO)));
+  }
+  return partes.join(' ').replace(/\s+/g, ' ').trim();
+}
+async function transcreverGroqUm(audio) {
   const id = ++groqSeq;
   const { status, corpo } = await new Promise((ok) => { groqPend.set(id, ok); A.groq(id, wavBase64(audio), pref.chave, pref.idioma); });
   let j = null; try { j = JSON.parse(corpo); } catch (e) {}
@@ -583,7 +596,28 @@ function transcreverAudio(audio) {
   });
 }
 
+async function decodificar(buf, semAudio) {
+  const ctx = new OfflineAudioContext(1, 16000, 16000);
+  let ab;
+  try { ab = await ctx.decodeAudioData(buf); } catch (e) { throw new Error(semAudio); }
+  if (ab.numberOfChannels === 1) return new Float32Array(ab.getChannelData(0));
+  const a = ab.getChannelData(0), b = ab.getChannelData(1), out = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = (a[i] + b[i]) / 2;
+  return out;
+}
+async function audioDoArquivo(v) {
+  let buf;
+  const web = arquivosWeb.get(v.arquivo.id);
+  if (web) buf = await web.arrayBuffer();
+  else {
+    const r = await fetch('/arquivo?u=' + encodeURIComponent(v.arquivo.uri)).catch(() => ({ ok: false, status: 0 }));
+    if (!r.ok) throw new Error(r.status === 404 ? 'Arquivo não encontrado. Escolha de novo.' : 'Não consegui abrir o arquivo (' + r.status + ')');
+    buf = await r.arrayBuffer();
+  }
+  return decodificar(buf, 'Não achei áudio nesse arquivo');
+}
 async function audioDe(v) {
+  if (v.arquivo) return audioDoArquivo(v);
   let url = v.video;
   if (!url && temCaptura()) {
     const m = await capturarPost(v.codigo, (x) => !!x.video);
@@ -606,15 +640,41 @@ async function audioDe(v) {
     if (m && m.video) { url = v.video = m.video; r = await fetch(cdn(url)).catch(() => ({ ok: false, status: 0 })); }
   }
   if (!r.ok) throw new Error('Falha ao baixar o vídeo (' + r.status + ')');
-  const buf = await r.arrayBuffer();
-  const ctx = new OfflineAudioContext(1, 16000, 16000);
-  let ab;
-  try { ab = await ctx.decodeAudioData(buf); } catch (e) { throw new Error('Vídeo sem áudio'); }
-  if (ab.numberOfChannels === 1) return new Float32Array(ab.getChannelData(0));
-  const a = ab.getChannelData(0), b = ab.getChannelData(1), out = new Float32Array(a.length);
-  for (let i = 0; i < a.length; i++) out[i] = (a[i] + b[i]) / 2;
-  return out;
+  return decodificar(await r.arrayBuffer(), 'Vídeo sem áudio');
 }
+
+// ---------- arquivos do celular ----------
+const arquivosWeb = new Map(); // só fora do APK (teste no navegador)
+function hashCurto(t) { let h = 5381; for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0; return (h >>> 0).toString(36); }
+function sessaoDeArquivos(lista) {
+  const itens = lista.filter((a) => a && (a.uri || a.id)).map((a, i) => ({
+    codigo: 'arq-' + hashCurto((a.nome || '') + ':' + (a.tamanho || 0) + ':' + (a.tamanho ? '' : a.uri || i)),
+    arquivo: { id: a.id || null, uri: a.uri || '', nome: a.nome || 'arquivo', tamanho: a.tamanho || 0 },
+    descricao: '', data: null, duracao: a.duracao || null, views: null, estado: 'fila', transcricao: '',
+  }));
+  if (!itens.length) return;
+  fecharFolhas();
+  E.sessao = { id: Date.now(), perfil: { nome: 'arquivos', titulo: 'Arquivos do celular', arquivo: true }, itens, inicio: Date.now(), fim: null, doHistorico: false };
+  pintarResultado();
+  ir('resultado');
+  rodar();
+}
+window.aoArquivos = (t) => {
+  let l = []; try { l = JSON.parse(t); } catch (e) {}
+  if (!l.length) return;
+  sessaoDeArquivos(l);
+};
+window.aoSalvarAudio = (ok, msg) => { aviso(msg); if (ok) A.toque(); };
+$('#btn-arquivo').addEventListener('click', () => {
+  A.toque();
+  if (A.escolherArquivo) A.escolherArquivo();
+  else $('#in-arquivo').click();
+});
+$('#in-arquivo').addEventListener('change', (e) => {
+  const fs = [...e.target.files];
+  e.target.value = '';
+  sessaoDeArquivos(fs.map((f, i) => { const id = 'w' + Date.now() + i; arquivosWeb.set(id, f); return { id, nome: f.name, tamanho: f.size }; }));
+});
 
 // ---------- sessão de transcrição ----------
 $('#btn-transcrever').addEventListener('click', () => {
@@ -626,7 +686,9 @@ $('#btn-transcrever').addEventListener('click', () => {
   rodar();
 });
 
+const rotuloSessao = (s) => (s.perfil.arquivo ? 'arquivos do celular' : '@' + s.perfil.nome);
 function tituloDe(v, i) {
+  if (nomeArq(v)) return nomeArq(v);
   const l = (v.descricao || '').split('\n').map((s) => s.trim()).find(Boolean) || '';
   return l ? (l.length > 90 ? l.slice(0, 90) + '…' : l) : `Vídeo ${i + 1}`;
 }
@@ -637,11 +699,13 @@ const ESTADOS = {
 
 function pintarResultado() {
   const s = E.sessao;
-  $('#res-cab').innerHTML = `${avatar(s.perfil)}<div><b>${esc(s.perfil.titulo || s.perfil.nome)}</b><small>@${esc(s.perfil.nome)} · ${s.itens.length} vídeos</small></div>`;
+  const arq = !!s.perfil.arquivo;
+  $('#res-cab').innerHTML = `${avatar(s.perfil)}<div><b>${esc(s.perfil.titulo || s.perfil.nome)}</b><small>${arq ? '' : '@' + esc(s.perfil.nome) + ' · '}${s.itens.length} ${arq ? (s.itens.length > 1 ? 'arquivos' : 'arquivo') : 'vídeos'}</small></div>`;
+  const icArq = '<span class="sem-img arq"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5v5l4-2.5z"/></svg></span>';
   $('#lista-res').innerHTML = s.itens.map((v, i) => `
     <article class="res" id="r-${i}" style="animation-delay:${Math.min(i, 12) * 35}ms">
       <button type="button" class="res-cab">
-        ${v.thumb && !s.doHistorico ? `<img src="${cdn(v.thumb)}" alt="">` : '<span class="sem-img"></span>'}
+        ${v.arquivo ? icArq : v.thumb && !s.doHistorico ? `<img src="${cdn(v.thumb)}" alt="">` : '<span class="sem-img"></span>'}
         <div><b>${esc(tituloDe(v, i))}</b>
           <small>${[fmtData(v.data), fmtDur(v.duracao), v.views ? fmtNum(v.views) + ' views' : ''].filter(Boolean).join(' · ')}</small>
           <span class="pilula" data-p></span></div>
@@ -649,16 +713,19 @@ function pintarResultado() {
       </button>
       <div class="res-corpo">
         <div class="bloco"><div class="bloco-cab"><span>Transcrição do áudio</span><button type="button" data-copiar="t">Copiar</button></div><p data-t></p></div>
-        <div class="bloco"><div class="bloco-cab"><span>Descrição do post</span><button type="button" data-copiar="d">Copiar</button></div><p class="${v.descricao ? '' : 'vazio'}">${esc(v.descricao || 'Sem descrição')}</p></div>
-        <button type="button" class="abrir-ig" data-abrir><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>Abrir no Instagram</button>
+        ${v.arquivo ? '' : `<div class="bloco"><div class="bloco-cab"><span>Descrição do post</span><button type="button" data-copiar="d">Copiar</button></div><p class="${v.descricao ? '' : 'vazio'}">${esc(v.descricao || 'Sem descrição')}</p></div>`}
+        ${v.arquivo
+    ? (A.salvarAudio && v.arquivo.uri ? '<button type="button" class="abrir-ig" data-audio><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 20h14"/></svg>Salvar só o áudio (.m4a)</button>' : '')
+    : '<button type="button" class="abrir-ig" data-abrir><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>Abrir no Instagram</button>'}
       </div>
     </article>`).join('');
   s.itens.forEach((v, i) => {
     const el = $('#r-' + i);
     $('.res-cab', el).onclick = () => { el.classList.toggle('aberto'); A.toque(); };
     $('[data-copiar="t"]', el).onclick = () => { if (v.transcricao) { A.copiar(v.transcricao); aviso('Transcrição copiada'); } };
-    $('[data-copiar="d"]', el).onclick = () => { A.copiar(v.descricao || ''); aviso('Descrição copiada'); };
-    $('[data-abrir]', el).onclick = () => A.abrirLink(`https://www.instagram.com/reel/${v.codigo}/`);
+    const bd = $('[data-copiar="d"]', el); if (bd) bd.onclick = () => { A.copiar(v.descricao || ''); aviso('Descrição copiada'); };
+    const ba = $('[data-abrir]', el); if (ba) ba.onclick = () => A.abrirLink(`https://www.instagram.com/reel/${v.codigo}/`);
+    const bs = $('[data-audio]', el); if (bs) bs.onclick = () => { aviso('Extraindo o áudio…'); A.salvarAudio(v.arquivo.uri, v.arquivo.nome); };
     pintarItem(i);
   });
   pintarPainel();
@@ -675,7 +742,7 @@ function pintarItem(i) {
   const [cls, txt] = ESTADOS[v.estado] || ESTADOS.fila;
   const p = $('[data-p]', el);
   p.className = 'pilula ' + cls;
-  p.textContent = v.estado === 'erro' ? 'Falhou · toque para tentar de novo' : (v.estado === 'pronto' && v.reuso ? 'Já transcrito antes' : txt);
+  p.textContent = v.estado === 'erro' ? 'Falhou · toque para tentar de novo' : v.estado === 'baixando' && v.arquivo ? 'Lendo o arquivo' : (v.estado === 'pronto' && v.reuso ? 'Já transcrito antes' : txt);
   p.onclick = v.estado === 'erro' ? (ev) => { ev.stopPropagation(); tentarDeNovo(); } : null;
   const t = $('[data-t]', el);
   t.textContent = v.transcricao || (v.estado === 'pronto' ? 'Sem fala no vídeo (provavelmente só música)' : 'Aguardando…');
@@ -689,9 +756,9 @@ function pintarPainel() {
   const terminado = feitos === tot;
   $('#painel').classList.toggle('feito', terminado && prontos > 0);
   if (terminado) {
-    $('#pp-titulo').textContent = prontos === tot ? `${tot} transcrições prontas ✓` : `${prontos} de ${tot} prontas`;
+    $('#pp-titulo').textContent = prontos === tot ? (tot === 1 ? '1 transcrição pronta ✓' : `${tot} transcrições prontas ✓`) : `${prontos} de ${tot} prontas`;
     $('#pp-eta').textContent = s.fim ? `em ${Math.max(1, Math.round((s.fim - s.inicio) / 60000))} min` : '';
-    if (!s.doHistorico) $('#pp-sub').textContent = 'Toque num vídeo para ver o texto. Use "Enviar .md" para mandar ao Claude.';
+    if (!s.doHistorico) $('#pp-sub').textContent = s.perfil.arquivo ? 'Toque no arquivo para ver o texto ou salvar só o áudio.' : 'Toque num vídeo para ver o texto. Use "Enviar .md" para mandar ao Claude.';
     else $('#pp-sub').textContent = `Salvo em ${new Date(s.id).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`;
   } else {
     $('#pp-titulo').textContent = `Transcrevendo ${Math.min(feitos + 1, tot)} de ${tot}`;
@@ -723,7 +790,7 @@ async function rodar() {
   const carregarAudio = (i) => (i < s.itens.length ? audioDe(s.itens[i]).then((a) => ({ a }), (e) => ({ e })) : null);
   const totalN = s.itens.length;
   const feitosN = () => s.itens.filter((x) => ['pronto', 'erro', 'cancelado'].includes(x.estado)).length;
-  try { A.notificar && A.notificar('inicio', `Transcrevendo @${s.perfil.nome}`, `${feitosN()} de ${totalN} prontos`, feitosN(), totalN); } catch (e) {}
+  try { A.notificar && A.notificar('inicio', `Transcrevendo ${rotuloSessao(s)}`, `${feitosN()} de ${totalN} prontos`, feitosN(), totalN); } catch (e) {}
   guardarSessao();
   let iProx = proxPendente(0);
   proximoAudio = carregarAudio(iProx);
@@ -749,7 +816,7 @@ async function rodar() {
       v.estado = 'erro'; v.erro = (e.message || 'erro').slice(0, 60);
     }
     pintarItem(i); pintarPainel(); guardarSessao();
-    try { A.notificar && A.notificar('progresso', `Transcrevendo @${s.perfil.nome}`, `${feitosN()} de ${totalN} prontos`, feitosN(), totalN); } catch (e) {}
+    try { A.notificar && A.notificar('progresso', `Transcrevendo ${rotuloSessao(s)}`, `${feitosN()} de ${totalN} prontos`, feitosN(), totalN); } catch (e) {}
     if (i === 0 && v.estado === 'pronto') $('#r-0').classList.add('aberto');
   }
   if (E.sessao === s) {
@@ -759,7 +826,7 @@ async function rodar() {
     guardarHistorico(s);
     guardarSessao();
     const ok = s.itens.filter((x) => x.estado === 'pronto').length;
-    try { A.notificar && A.notificar('fim', `${ok} transcrições prontas ✓`, `@${s.perfil.nome} · toque para ver`, totalN, totalN); } catch (e) {}
+    try { A.notificar && A.notificar('fim', `${ok} transcrições prontas ✓`, `${rotuloSessao(s)} · toque para ver`, totalN, totalN); } catch (e) {}
   } else {
     try { A.notificar && A.notificar('parar', '', '', 0, 0); } catch (e) {}
   }
@@ -800,6 +867,11 @@ function gerarMd(s) {
   s.itens.forEach((v, i) => {
     if (v.estado !== 'pronto') return;
     const info = [v.data ? 'Publicado: ' + new Date(v.data * 1000).toLocaleDateString('pt-BR') : '', v.duracao ? 'Duração: ' + fmtDur(v.duracao) : '', v.views ? 'Visualizações: ' + v.views.toLocaleString('pt-BR') : ''].filter(Boolean).join(' · ');
+    if (v.arquivo) {
+      linhas.push(`## ${i + 1}. ${tituloDe(v, i)}`, `Arquivo do celular: ${nomeArq(v)}  `, info, '',
+        '### Transcrição do áudio', v.transcricao || '_(sem fala detectada)_', '', '---', '');
+      return;
+    }
     linhas.push(`## ${i + 1}. ${tituloDe(v, i)}`, `Link: https://www.instagram.com/reel/${v.codigo}/  `, info, '',
       '### Transcrição do áudio', v.transcricao || '_(sem fala detectada)_', '',
       '### Descrição do post', v.descricao || '_(sem descrição)_', '', '---', '');
@@ -813,7 +885,7 @@ function nomeArquivo(s) {
 function gerarMdAcumulado() {
   const lista = acumulado();
   const agora = new Date();
-  const perfis = [...new Set(lista.map((m) => '@' + m.perfil))];
+  const perfis = [...new Set(lista.map((m) => (m.arquivo ? 'arquivos do celular' : '@' + m.perfil)))];
   const linhas = [
     `# Transcrições · acumulado (${perfis.join(', ')})`,
     `Atualizado em ${agora.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })} · ${lista.length} vídeos (os ${pref.limite} mais recentes)`,
@@ -821,6 +893,11 @@ function gerarMdAcumulado() {
   ];
   lista.forEach((m, i) => {
     const info = [m.data ? 'Publicado: ' + new Date(m.data * 1000).toLocaleDateString('pt-BR') : '', m.duracao ? 'Duração: ' + fmtDur(m.duracao) : '', m.views ? 'Visualizações: ' + m.views.toLocaleString('pt-BR') : ''].filter(Boolean).join(' · ');
+    if (m.arquivo) {
+      linhas.push(`## ${i + 1}. ${tituloDe(m, i)}`, `Arquivo do celular: ${m.arquivo}  `, info, '',
+        '### Transcrição do áudio', m.transcricao || '_(sem fala detectada)_', '', '---', '');
+      return;
+    }
     linhas.push(`## ${i + 1}. ${tituloDe(m, i)}`, `Perfil: @${m.perfil}  `, `Link: https://www.instagram.com/reel/${m.codigo}/  `, info, '',
       '### Transcrição do áudio', m.transcricao || '_(sem fala detectada)_', '',
       '### Descrição do post', m.descricao || '_(sem descrição)_', '', '---', '');
@@ -835,8 +912,8 @@ function guardarHistorico(s) {
   if (!s.itens.some((v) => v.estado === 'pronto')) return;
   const h = ler('historico', []).filter((x) => x.id !== s.id);
   const p = s.perfil;
-  h.unshift({ id: s.id, inicio: s.inicio, fim: s.fim, perfil: { nome: p.nome, titulo: p.titulo },
-    itens: s.itens.map(({ codigo, descricao, data, duracao, views, estado, transcricao }) => ({ codigo, descricao, data, duracao, views, estado, transcricao })) });
+  h.unshift({ id: s.id, inicio: s.inicio, fim: s.fim, perfil: { nome: p.nome, titulo: p.titulo, arquivo: !!p.arquivo },
+    itens: s.itens.map(({ codigo, descricao, data, duracao, views, estado, transcricao, arquivo }) => ({ codigo, descricao, data, duracao, views, estado, transcricao, arquivo: arquivo ? { uri: arquivo.uri || '', nome: arquivo.nome, tamanho: arquivo.tamanho } : undefined })) });
   gravar('historico', h.slice(0, 25));
   pintarRecentes();
 }
@@ -847,7 +924,7 @@ function pintarRecentes() {
     const n = x.itens.filter((v) => v.estado === 'pronto').length;
     const d = new Date(x.id).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }).replace('.', '');
     return `<button type="button" class="recente" data-h="${x.id}"><span class="av">${esc(x.perfil.nome[0].toUpperCase())}</span>
-      <div><b>@${esc(x.perfil.nome)}</b><small>${n} transcriç${n === 1 ? 'ão' : 'ões'} · ${d}</small></div>
+      <div><b>${x.perfil.arquivo ? esc(x.itens.length === 1 ? nomeArq(x.itens[0]) : 'Arquivos do celular') : '@' + esc(x.perfil.nome)}</b><small>${n} transcriç${n === 1 ? 'ão' : 'ões'} · ${d}</small></div>
       <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>`;
   }).join('');
   $$('#lista-recentes .recente').forEach((b) => b.addEventListener('click', () => {
