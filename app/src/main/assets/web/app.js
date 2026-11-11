@@ -63,7 +63,7 @@ window.voltar = () => {
   const aberta = $('.folha.on');
   if (aberta) { fecharFolhas(); return true; }
   if (telaAtual === 'resultado') { if (!E.rodando) esquecerSessao(); ir(E.sessao && E.sessao.doHistorico ? 'inicio' : (E.videos.length ? 'videos' : 'inicio')); return true; }
-  if (telaAtual === 'videos') { ir('inicio'); return true; }
+  if (telaAtual === 'videos' || telaAtual === 'extrator') { ir('inicio'); return true; }
   return false;
 };
 $$('[data-voltar]').forEach((b) => b.addEventListener('click', () => window.voltar()));
@@ -659,10 +659,13 @@ function sessaoDeArquivos(lista) {
   ir('resultado');
   rodar();
 }
+let modoArquivos = 'transcrever';
 window.aoArquivos = (t) => {
   let l = []; try { l = JSON.parse(t); } catch (e) {}
+  const extrair = modoArquivos === 'extrair' && telaAtual === 'extrator';
+  modoArquivos = 'transcrever';
   if (!l.length) return;
-  sessaoDeArquivos(l);
+  if (extrair) exAdicionar(l); else sessaoDeArquivos(l);
 };
 window.aoSalvarAudio = (ok, msg) => { aviso(msg); if (ok) A.toque(); };
 $('#btn-arquivo').addEventListener('click', () => {
@@ -936,5 +939,193 @@ function pintarRecentes() {
 }
 
 // ---------- início ----------
+// ---------- extrator de áudio (só o áudio, sem transcrever) ----------
+const EX_QUAL = { leve: { taxa: 16000, canais: 1, bitrate: 24000 } };
+let exQual = ler('exQual', 'leve');
+const exFila = [];
+let exRodando = false, exSeq = 0;
+const exPend = new Map();
+const fmtTam = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB').replace('.', ',');
+const exDormir = (ms) => new Promise((r) => setTimeout(r, ms));
+function pintarExQual() { $$('#ex-qual button').forEach((b) => b.classList.toggle('sel', b.dataset.q === exQual)); }
+$$('#ex-qual button').forEach((b) => b.addEventListener('click', () => { exQual = b.dataset.q; gravar('exQual', exQual); pintarExQual(); A.toque(); }));
+$('#btn-extrator').addEventListener('click', () => { A.toque(); pintarExQual(); ir('extrator'); });
+$('#ex-escolher').addEventListener('click', () => {
+  A.toque();
+  if (A.escolherArquivo) { modoArquivos = 'extrair'; A.escolherArquivo(); }
+  else $('#ex-input').click();
+});
+$('#ex-input').addEventListener('change', (e) => {
+  const fs = [...e.target.files]; e.target.value = '';
+  exAdicionar(fs.map((f) => ({ arquivoWeb: f, nome: f.name, tamanho: f.size })));
+});
+window.aoExtraido = (id, ok, msg, tam) => { const p = exPend.get(id); if (p) { exPend.delete(id); p({ ok, msg, tam }); } };
+
+function exAdicionar(lista) {
+  for (const a of lista) {
+    if (!a || !(a.uri || a.arquivoWeb)) continue;
+    const t = { id: ++exSeq, a, q: exQual, el: document.createElement('div') };
+    t.el.className = 'ex-item';
+    t.el.innerHTML = `<div class="ex-cab"><span class="dica-ic"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5v5l4-2.5z"/></svg></span>
+      <div><b>${esc(a.nome || 'arquivo')}</b><small>${a.tamanho ? fmtTam(a.tamanho) : ''}</small></div><span class="pilula" data-e>Na fila</span></div>
+      <div class="barra"><i></i></div><div data-corpo></div>`;
+    $('#ex-lista').prepend(t.el);
+    exFila.push(t);
+  }
+  ir('extrator');
+  exProcessar();
+}
+async function exProcessar() {
+  if (exRodando) return;
+  exRodando = true;
+  A.manterTelaLigada(true);
+  while (exFila.length) {
+    const t = exFila.shift();
+    try { await exExtrair(t); } catch (e) { exFalhou(t, e); }
+  }
+  A.manterTelaLigada(false);
+  exRodando = false;
+}
+function exEstado(t, txt, cls) { const e = $('[data-e]', t.el); e.textContent = txt; e.className = 'pilula ' + (cls || ''); }
+function exBarra(t, p) {
+  const b = $('.barra', t.el);
+  if (p == null) b.classList.add('indef'); else { b.classList.remove('indef'); b.firstElementChild.style.width = Math.round(p * 100) + '%'; }
+}
+function exFalhou(t, e) {
+  exEstado(t, 'Falhou', 'erro'); $('.barra', t.el).hidden = true;
+  $('[data-corpo]', t.el).innerHTML = `<p class="msg">${esc((e && e.message) || 'Algo deu errado.')}</p>`;
+}
+const exBase = (nome) => String(nome || 'audio').replace(/\.[^.]+$/, '');
+
+async function exExtrair(t) {
+  const podeLeve = typeof AudioEncoder !== 'undefined' && typeof WebMMuxer !== 'undefined';
+  if (t.q === 'leve' && podeLeve) {
+    try { return await exLeve(t); }
+    catch (e) { if (!t.a.uri || !A.extrairPara) throw e; }
+  }
+  if (t.a.uri && A.extrairPara) return exOriginal(t, t.q === 'leve' ? 'Este celular não gera o áudio leve; salvei o original.' : '');
+  if (podeLeve) return exLeve(t);
+  throw new Error('Não consegui gerar o áudio neste aparelho.');
+}
+
+async function exOriginal(t, nota) {
+  exEstado(t, 'Extraindo', 'ativo'); exBarra(t, null);
+  const r = await new Promise((ok) => { exPend.set(t.id, ok); A.extrairPara(t.id, t.a.uri, t.a.nome || 'audio'); });
+  if (!r.ok) throw new Error(r.msg);
+  exBarra(t, 1); exEstado(t, 'Pronto', 'ok');
+  $('small', t.el).textContent = `${t.a.tamanho ? fmtTam(t.a.tamanho) + ' → ' : ''}${r.tam ? fmtTam(r.tam) : 'áudio original'} · .m4a`;
+  $('[data-corpo]', t.el).innerHTML = `<audio controls preload="metadata" src="/arquivo?u=${encodeURIComponent(t.a.uri)}"></audio>
+    <p class="ex-ok">Salvo em Downloads › Transcritor${nota ? '. ' + esc(nota) : ''}</p>`;
+  A.toque();
+}
+
+async function exLeve(t) {
+  const cfg = EX_QUAL.leve;
+  exEstado(t, 'Lendo o áudio', 'ativo'); exBarra(t, null);
+  let buf;
+  if (t.a.arquivoWeb) buf = await t.a.arquivoWeb.arrayBuffer();
+  else {
+    const r = await fetch('/arquivo?u=' + encodeURIComponent(t.a.uri)).catch(() => ({ ok: false, status: 0 }));
+    if (!r.ok) throw new Error('Não consegui abrir o arquivo (' + r.status + ')');
+    buf = await r.arrayBuffer();
+  }
+  const ctx = new OfflineAudioContext(cfg.canais, 1, cfg.taxa);
+  let ab;
+  try { ab = await ctx.decodeAudioData(buf); } catch (e) { throw new Error('Não achei áudio nesse arquivo.'); }
+  buf = null;
+  const canais = Math.min(cfg.canais, ab.numberOfChannels) || 1;
+  const n = ab.length;
+  if (!n) throw new Error('Esse vídeo não tem som.');
+  exEstado(t, 'Gerando o áudio', 'ativo'); exBarra(t, 0);
+  const conf = { codec: 'opus', sampleRate: cfg.taxa, numberOfChannels: canais, bitrate: cfg.bitrate };
+  const sup = await AudioEncoder.isConfigSupported(conf).catch(() => ({ supported: false }));
+  if (!sup.supported) throw new Error('Este celular não gera áudio Opus.');
+  const muxer = new WebMMuxer.Muxer({ target: new WebMMuxer.ArrayBufferTarget(), audio: { codec: 'A_OPUS', sampleRate: cfg.taxa, numberOfChannels: canais } });
+  let erroEnc = null;
+  const enc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: (e) => { erroEnc = e; } });
+  enc.configure(conf);
+  const dados = [];
+  for (let c = 0; c < canais; c++) dados.push(ab.getChannelData(c));
+  const BLOCO = cfg.taxa;
+  for (let i = 0; i < n; i += BLOCO) {
+    if (erroEnc) throw erroEnc;
+    const k = Math.min(BLOCO, n - i);
+    const planar = new Float32Array(k * canais);
+    for (let c = 0; c < canais; c++) planar.set(dados[c].subarray(i, i + k), c * k);
+    const ad = new AudioData({ format: 'f32-planar', sampleRate: cfg.taxa, numberOfFrames: k, numberOfChannels: canais, timestamp: Math.round((i / cfg.taxa) * 1e6), data: planar });
+    enc.encode(ad); ad.close();
+    if (enc.encodeQueueSize > 8 || (i / BLOCO) % 20 === 0) { exBarra(t, i / n); while (enc.encodeQueueSize > 8) await exDormir(5); await exDormir(0); }
+  }
+  await enc.flush(); enc.close();
+  if (erroEnc) throw erroEnc;
+  muxer.finalize();
+  const blob = new Blob([muxer.target.buffer], { type: 'audio/webm' });
+  const nome = exBase(t.a.nome) + ' (audio).webm';
+  let salvo = false;
+  if (A.salvarBinario) {
+    const b64 = await new Promise((ok, falha) => { const fr = new FileReader(); fr.onload = () => ok(String(fr.result).split(',')[1] || ''); fr.onerror = falha; fr.readAsDataURL(blob); });
+    salvo = !!A.salvarBinario(nome, 'audio/webm', b64);
+  }
+  exBarra(t, 1); exEstado(t, 'Pronto', 'ok');
+  $('small', t.el).textContent = `${fmtDur(ab.duration)} · ${t.a.tamanho ? fmtTam(t.a.tamanho) + ' → ' : ''}${fmtTam(blob.size)} · .webm`;
+  const url = URL.createObjectURL(blob);
+  $('[data-corpo]', t.el).innerHTML = `<audio controls preload="metadata" src="${url}"></audio>` +
+    (salvo ? '<p class="ex-ok">Salvo em Downloads › Transcritor</p>'
+      : `<div class="ex-acoes"><button type="button" data-baixar>Baixar áudio</button></div>`);
+  const bb = $('[data-baixar]', t.el);
+  if (bb) bb.onclick = () => { const a = document.createElement('a'); a.href = url; a.download = nome; a.click(); };
+  A.toque();
+}
+
+// ---------- atualização automática pelo GitHub ----------
+const REPO_API = 'https://api.github.com/repos/danielsoaresbarboza-debug/transcritor/releases/latest';
+let novaVersao = null;
+function versaoMaior(a, b) {
+  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const x = pa[i] || 0, y = pb[i] || 0; if (x !== y) return x > y; }
+  return false;
+}
+async function checarAtualizacao(manual) {
+  const atual = (A.versao && A.versao()) || '';
+  if (!/^\d+\.\d+/.test(atual)) { if (manual) aviso('Atualização só funciona no app instalado'); return; }
+  if (!manual && Date.now() - ler('checouAtualizacao', 0) < 3 * 3600 * 1000 && !ler('novaVersao', null)) return;
+  gravar('checouAtualizacao', Date.now());
+  try {
+    const r = await fetch(REPO_API, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' });
+    if (!r.ok) throw new Error('GitHub ' + r.status);
+    const j = await r.json();
+    const tag = String(j.tag_name || '').replace(/^v/, '');
+    const apk = (j.assets || []).find((x) => /\.apk$/i.test(x.name));
+    if (apk && versaoMaior(tag, atual)) {
+      novaVersao = { tag, url: apk.browser_download_url };
+      gravar('novaVersao', novaVersao);
+      $('#at-titulo').textContent = `Nova versão ${tag} disponível`;
+      $('#at-sub').textContent = `Você está na ${atual}. Toque para atualizar.`;
+      $('#at-btn').disabled = false; $('#at-btn').textContent = 'Atualizar';
+      $('#atualiza').classList.remove('oculto');
+    } else {
+      gravar('novaVersao', null);
+      $('#atualiza').classList.add('oculto');
+      if (manual) aviso(`Você já está na versão mais nova (${atual}) ✓`);
+    }
+  } catch (e) { if (manual) aviso('Não consegui ver se tem versão nova. Tente de novo.'); }
+}
+$('#at-btn').addEventListener('click', () => {
+  if (!novaVersao || !A.atualizar) return;
+  A.toque();
+  $('#at-btn').disabled = true; $('#at-btn').textContent = 'Baixando…';
+  A.atualizar(novaVersao.url, novaVersao.tag);
+});
+window.aoAtualizacao = (estado, pct, msg) => {
+  const sub = $('#at-sub'), btn = $('#at-btn');
+  if (estado === 'baixando') { sub.textContent = `Baixando a versão nova… ${pct >= 0 ? pct + '%' : ''}`; }
+  else if (estado === 'permissao') { sub.textContent = 'Permita “Instalar apps desconhecidos” para o Transcritor, volte e toque em Atualizar de novo.'; btn.disabled = false; btn.textContent = 'Atualizar'; }
+  else if (estado === 'instalando') { sub.textContent = 'Confirme a instalação na tela do Android.'; btn.disabled = false; btn.textContent = 'Instalar'; }
+  else if (estado === 'erro') { sub.textContent = 'Não deu para baixar: ' + (msg || 'erro') + '. Tente de novo.'; btn.disabled = false; btn.textContent = 'Tentar de novo'; }
+};
+$('#btn-checar').addEventListener('click', () => { A.toque(); checarAtualizacao(true); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checarAtualizacao(false); });
+
 pintarQtd(); pintarAjustes(); atualizarConta(); pintarRecentes();
+setTimeout(() => checarAtualizacao(false), 1500);
 restaurarSessao();

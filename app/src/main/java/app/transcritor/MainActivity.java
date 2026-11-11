@@ -687,6 +687,107 @@ public class MainActivity extends Activity {
             }).start();
         }
 
+        /** Extrator: copia a faixa de áudio (sem perder qualidade) e avisa a página com o tamanho. */
+        @JavascriptInterface
+        public void extrairPara(int id, String uri, String nome) {
+            new Thread(() -> {
+                boolean ok = false;
+                String msg;
+                long tam = 0;
+                try {
+                    Uri d = gravarAudio(Uri.parse(uri), nome);
+                    try (android.database.Cursor c = getContentResolver().query(d, new String[]{MediaStore.MediaColumns.SIZE}, null, null, null)) {
+                        if (c != null && c.moveToFirst()) tam = c.getLong(0);
+                    } catch (Exception ignored) {
+                    }
+                    ok = true;
+                    msg = "Salvo em Downloads/Transcritor";
+                } catch (Exception e) {
+                    msg = "Não consegui extrair o áudio: " + e.getMessage();
+                }
+                js("window.aoExtraido && window.aoExtraido(" + id + "," + ok + "," + JSONObject.quote(msg) + "," + tam + ")");
+            }).start();
+        }
+
+        /** Extrator: grava um arquivo gerado na página (ex.: áudio .webm leve) em Downloads/Transcritor. */
+        @JavascriptInterface
+        public boolean salvarBinario(String nome, String mime, String base64) {
+            try {
+                byte[] dados = android.util.Base64.decode(base64, android.util.Base64.DEFAULT);
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.MediaColumns.DISPLAY_NAME, nome);
+                v.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Transcritor");
+                Uri u = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                if (u == null) return false;
+                try (OutputStream out = getContentResolver().openOutputStream(u)) {
+                    out.write(dados);
+                }
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        /** Atualização pelo GitHub: baixa o APK da versão nova e abre o instalador do Android. */
+        @JavascriptInterface
+        public void atualizar(String url, String tag) {
+            if (url == null || !url.startsWith("https://github.com/danielsoaresbarboza-debug/transcritor/")) return;
+            new Thread(() -> {
+                try {
+                    File dir = new File(getCacheDir(), "atualizacao");
+                    dir.mkdirs();
+                    File apk = new File(dir, "Transcritor-" + tag.replaceAll("[^A-Za-z0-9.]", "") + ".apk");
+                    File pronto = new File(dir, apk.getName() + ".ok");
+                    if (!pronto.exists()) {
+                        File[] velhos = dir.listFiles();
+                        if (velhos != null) for (File f : velhos) f.delete();
+                        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                        c.setInstanceFollowRedirects(true);
+                        c.setConnectTimeout(20000);
+                        c.setReadTimeout(60000);
+                        int st = c.getResponseCode();
+                        if (st != 200) throw new Exception("GitHub respondeu " + st);
+                        long total = c.getContentLengthLong(), lido = 0;
+                        int ultimo = -1;
+                        try (InputStream in = c.getInputStream(); OutputStream out = new java.io.FileOutputStream(apk)) {
+                            byte[] b = new byte[65536];
+                            int n;
+                            while ((n = in.read(b)) > 0) {
+                                out.write(b, 0, n);
+                                lido += n;
+                                int pct = total > 0 ? (int) (lido * 100 / total) : -1;
+                                if (pct != ultimo && pct % 5 == 0) {
+                                    ultimo = pct;
+                                    js("window.aoAtualizacao && window.aoAtualizacao('baixando'," + pct + ")");
+                                }
+                            }
+                        }
+                        pronto.createNewFile();
+                    }
+                    runOnUiThread(() -> {
+                        if (!getPackageManager().canRequestPackageInstalls()) {
+                            js("window.aoAtualizacao && window.aoAtualizacao('permissao',0)");
+                            try {
+                                startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                        Uri.parse("package:" + getPackageName())));
+                            } catch (Exception ignored) {
+                            }
+                            return;
+                        }
+                        Uri u = androidx.core.content.FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".arquivos", apk);
+                        Intent i = new Intent(Intent.ACTION_VIEW);
+                        i.setDataAndType(u, "application/vnd.android.package-archive");
+                        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(i);
+                        js("window.aoAtualizacao && window.aoAtualizacao('instalando',100)");
+                    });
+                } catch (Exception e) {
+                    js("window.aoAtualizacao && window.aoAtualizacao('erro',0," + JSONObject.quote(String.valueOf(e.getMessage())) + ")");
+                }
+            }).start();
+        }
+
         @JavascriptInterface
         public void igMostrar(boolean sim) {
             mostrarIg(sim);

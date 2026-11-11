@@ -207,3 +207,31 @@ svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-l
 .arquivo-cta .seta-d{width:20px;height:20px;flex:none;color:var(--mudo);fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .res-cab .sem-img.arq{display:grid;place-items:center;color:var(--a1)}
 .res-cab .sem-img.arq svg{width:24px;height:24px}
+
+/* atualização */
+.atualiza{display:flex;align-items:center;gap:12px;margin-top:6px;padding:12px 14px;border-color:rgba(255,154,61,.45)!important;background:linear-gradient(135deg,rgba(255,154,61,.14),rgba(232,67,111,.1))!important}
+.atualiza .at-txt{flex:1;display:flex;flex-direction:column;gap:2px;min-width:0}
+.atualiza .at-txt b{font-size:15px}
+.atualiza .at-txt small{color:var(--mudo);font-size:12.5px}
+.at-btn{flex:none;height:40px;padding:0 16px;border-radius:12px;background:var(--grad);color:#fff;font-weight:800;font-size:14px}
+.at-btn:disabled{opacity:.5}
+/* extrator */
+.av-arq{display:grid;place-items:center;background:var(--grad)!important}
+.av-arq svg{width:20px;height:20px;color:#fff}
+#ex-lista{display:flex;flex-direction:column;gap:10px;margin-top:14px}
+.ex-item{background:rgba(23,23,29,.78);border:1px solid var(--borda);border-radius:18px;padding:13px 14px;animation:surge .35s both}
+.ex-cab{display:flex;gap:12px;align-items:center}
+.ex-cab .dica-ic{flex:none}
+.ex-cab div{flex:1;min-width:0}
+.ex-cab b{display:block;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ex-cab small{color:var(--mudo);font-size:12.5px}
+.ex-item .barra{margin-top:10px;height:6px}
+.ex-item .barra.indef i{width:35%!important;animation:vaivem 1.1s ease-in-out infinite}
+@keyframes vaivem{from{transform:translateX(-100%)}to{transform:translateX(300%)}}
+.ex-item audio{width:100%;margin-top:10px;height:40px}
+.ex-item .msg{color:var(--erro);font-size:13px;margin-top:8px;line-height:1.45}
+.ex-acoes{display:flex;gap:8px;margin-top:8px}
+.ex-acoes button{flex:1;height:42px;border-radius:12px;background:var(--sup2);border:1px solid var(--borda2);font-weight:700;font-size:14px}
+.ex-nota{color:var(--mudo);font-size:13px;line-height:1.55;margin-top:18px;padding:12px 14px;border:1px dashed var(--borda2);border-radius:16px}
+.ex-nota b{color:var(--texto)}
+.ex-ok{color:var(--ok);font-size:13px;font-weight:600;margin-top:8px}
